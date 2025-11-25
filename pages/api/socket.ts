@@ -42,11 +42,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       });
       
       console.log('✅ Socket.io server inicializado com sucesso');
+      // Salvar referência no httpServer para reutilizar
+      (httpServer as any)._io = io;
     } catch (error) {
       console.error('❌ Erro ao inicializar Socket.io:', error);
       return res.status(500).json({ error: 'Failed to initialize Socket.io' });
     }
+  }
 
+  // Configurar handlers de conexão apenas uma vez
+  if (io && !(io as any)._handlersConfigured) {
     io.on('connection', (socket) => {
       // Obter nome inicial do auth ou usar padrão
       const initialName = (socket.handshake.auth?.playerName as string) || 'Jogador';
@@ -141,8 +146,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         playerNames.delete(socket.id);
       });
     });
+    
+    // Marcar handlers como configurados
+    (io as any)._handlersConfigured = true;
   }
 
-  res.end();
+  res.status(200).json({ status: 'ok', socket: io ? 'initialized' : 'not initialized' });
 }
 

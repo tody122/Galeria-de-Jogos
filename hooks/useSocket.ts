@@ -41,14 +41,18 @@ export function useSocket() {
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Inicializar conexão Socket.io
-      const socketInstance = io('/', {
+      // Usar polling primeiro, depois upgrade para websocket
+      const socketInstance = io(window.location.origin, {
         path: '/api/socket',
-        transports: ['websocket', 'polling'],
+        transports: ['polling', 'websocket'], // Polling primeiro para garantir conexão
+        upgrade: true,
+        rememberUpgrade: true,
         reconnection: true,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        reconnectionAttempts: 5,
+        reconnectionAttempts: Infinity,
         timeout: 20000,
+        forceNew: false,
         auth: {
           playerName: playerName || 'Jogador',
         },
