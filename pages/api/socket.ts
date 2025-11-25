@@ -19,7 +19,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   console.log('API Socket chamada:', req.method);
   
   if (!io) {
-    const httpServer = res.socket?.server as HTTPServer;
+    // Acessar o servidor HTTP do Next.js
+    const httpServer = (res.socket as any)?.server as HTTPServer;
     
     if (!httpServer) {
       console.error('HTTP Server não disponível');
