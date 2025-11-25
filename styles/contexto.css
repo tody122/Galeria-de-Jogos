@@ -525,6 +525,46 @@
   font-size: 0.9rem;
 }
 
+/* Admin Controls */
+.admin-controls {
+  margin: 2rem 0;
+  padding: 1.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 12px;
+  border: 2px solid var(--border-color);
+  text-align: center;
+}
+
+.randomize-teams-btn {
+  padding: 1rem 2rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.randomize-teams-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+  background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+}
+
+.randomize-teams-btn:active {
+  transform: translateY(0);
+}
+
+.randomize-hint {
+  margin-top: 0.75rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
 /* Game Mode Selection */
 .game-mode-selection {
   margin-bottom: 2rem;

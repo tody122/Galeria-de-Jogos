@@ -292,6 +292,12 @@ export default class ContextoGame {
             `).join('')}
           </div>
         </div>
+        <div class="admin-controls">
+          <button class="randomize-teams-btn" id="randomize-teams-btn">
+            🎲 Aleatorizar Times
+          </button>
+          <p class="randomize-hint">Distribui todos os jogadores aleatoriamente entre os times</p>
+        </div>
         <button class="start-game-btn" id="start-game-btn" ${canStart ? '' : 'disabled'}>
           Iniciar Jogo
         </button>
@@ -784,6 +790,12 @@ export default class ContextoGame {
       this.joinSpectator();
     });
 
+    // Botão de aleatorizar times (apenas admin)
+    const randomizeTeamsBtn = this.gameElement.querySelector('#randomize-teams-btn');
+    randomizeTeamsBtn?.addEventListener('click', () => {
+      this.randomizeTeams();
+    });
+
     // Listener para seleção de modo
     const gameModesGrid = this.gameElement.querySelector('#game-modes-grid');
     if (gameModesGrid) {
@@ -1025,6 +1037,88 @@ export default class ContextoGame {
         event: 'game-mode-selected',
         payload: {
           mode: mode,
+        },
+      });
+    }
+  }
+
+  private randomizeTeams() {
+    // Verificar se é admin
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isAdmin = currentPlayer?.isAdmin || false;
+    
+    if (!isAdmin) {
+      alert('Apenas o administrador pode aleatorizar os times!');
+      return;
+    }
+
+    if (this.gameState.isGameActive) {
+      alert('Não é possível aleatorizar times durante o jogo!');
+      return;
+    }
+
+    // Pegar todos os jogadores que não são telespectadores
+    // Incluir jogadores em times E jogadores sem time (team === null)
+    const playersToRandomize = this.gameState.players.filter(
+      (p) => p.team !== 'spectator'
+    );
+
+    // Se não há jogadores suficientes
+    if (playersToRandomize.length === 0) {
+      alert('Não há jogadores para aleatorizar! Os jogadores precisam estar disponíveis (não podem ser telespectadores).');
+      return;
+    }
+
+    // Limpar todos os times
+    this.gameState.team1 = [];
+    this.gameState.team2 = [];
+    
+    // Remover times de todos os jogadores
+    playersToRandomize.forEach((player) => {
+      player.team = null;
+    });
+
+    // Embaralhar os jogadores aleatoriamente
+    const shuffledPlayers = [...playersToRandomize].sort(() => Math.random() - 0.5);
+
+    // Distribuir os jogadores entre os times
+    // Tentar manter os times balanceados (máximo 2 por time)
+    shuffledPlayers.forEach((player) => {
+      if (this.gameState.team1.length < 2 && (this.gameState.team1.length <= this.gameState.team2.length || this.gameState.team2.length >= 2)) {
+        player.team = 'team1';
+        this.gameState.team1.push(player);
+      } else if (this.gameState.team2.length < 2) {
+        player.team = 'team2';
+        this.gameState.team2.push(player);
+      } else {
+        // Se ambos os times estão cheios, colocar no time com menos jogadores
+        if (this.gameState.team1.length <= this.gameState.team2.length) {
+          player.team = 'team1';
+          this.gameState.team1.push(player);
+        } else {
+          player.team = 'team2';
+          this.gameState.team2.push(player);
+        }
+      }
+    });
+
+    console.log('🎲 Times aleatorizados:', {
+      team1: this.gameState.team1.map(p => p.name),
+      team2: this.gameState.team2.map(p => p.name),
+    });
+
+    this.saveGameState();
+    this.updateDisplay();
+    this.updateStartButton();
+
+    // Enviar para outros jogadores
+    if (this.socket && this.roomId) {
+      this.socket.emit('game-broadcast', {
+        roomId: this.roomId,
+        event: 'teams-randomized',
+        payload: {
+          team1: this.gameState.team1.map(p => ({ id: p.id, name: p.name })),
+          team2: this.gameState.team2.map(p => ({ id: p.id, name: p.name })),
         },
       });
     }
@@ -1533,6 +1627,45 @@ export default class ContextoGame {
             this.gameState.gameMode = mode;
             this.updateDisplay();
           }
+          break;
+        case 'teams-randomized':
+          const { team1: randomizedTeam1, team2: randomizedTeam2 } = data.payload;
+          
+          // Limpar times atuais
+          this.gameState.team1 = [];
+          this.gameState.team2 = [];
+          
+          // Atualizar times dos jogadores
+          randomizedTeam1.forEach((teamPlayer: { id: string; name: string }) => {
+            const player = this.gameState.players.find((p) => p.id === teamPlayer.id || p.name === teamPlayer.name);
+            if (player) {
+              player.team = 'team1';
+              if (!this.gameState.team1.find((p) => p.id === player.id)) {
+                this.gameState.team1.push(player);
+              }
+            }
+          });
+          
+          randomizedTeam2.forEach((teamPlayer: { id: string; name: string }) => {
+            const player = this.gameState.players.find((p) => p.id === teamPlayer.id || p.name === teamPlayer.name);
+            if (player) {
+              player.team = 'team2';
+              if (!this.gameState.team2.find((p) => p.id === player.id)) {
+                this.gameState.team2.push(player);
+              }
+            }
+          });
+          
+          // Remover jogadores que não estão mais em times
+          this.gameState.players.forEach((player) => {
+            if (player.team !== 'team1' && player.team !== 'team2' && player.team !== 'spectator') {
+              player.team = null;
+            }
+          });
+          
+          this.saveGameState();
+          this.updateDisplay();
+          this.updateStartButton();
           break;
         case 'game-started':
         case 'round-started':
