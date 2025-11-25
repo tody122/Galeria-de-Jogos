@@ -16,7 +16,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     return;
   }
 
-  console.log('API Socket chamada:', req.method);
+  console.log('API Socket chamada:', req.method, req.url);
   
   if (!io) {
     // Acessar o servidor HTTP do Next.js
@@ -34,14 +34,113 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         addTrailingSlash: false,
         cors: {
           origin: '*',
-          methods: ['GET', 'POST'],
+          methods: ['GET', 'POST', 'OPTIONS'],
           credentials: true,
+          allowedHeaders: ['Content-Type', 'Authorization'],
         },
         pingTimeout: 60000,
         pingInterval: 25000,
+        transports: ['polling', 'websocket'],
+        allowEIO3: true,
       });
       
       console.log('✅ Socket.io server inicializado com sucesso');
+      
+      // Configurar handlers de conexão
+      io.on('connection', (socket) => {
+        // Obter nome inicial do auth ou usar padrão
+        const initialName = (socket.handshake.auth?.playerName as string) || 'Jogador';
+        playerNames.set(socket.id, initialName);
+        console.log('✅ Cliente conectado:', socket.id, 'Nome:', initialName);
+
+        // Atualizar nome do jogador
+        socket.on('update-player-name', (playerName: string) => {
+          const oldName = playerNames.get(socket.id) || 'Jogador';
+          playerNames.set(socket.id, playerName || 'Jogador');
+          console.log(`Jogador ${socket.id} atualizou nome de "${oldName}" para "${playerName}"`);
+        });
+
+        // Notificar mudança de nome na sala
+        socket.on('player-name-changed', (data: { roomId: string; newName: string }) => {
+          const oldName = playerNames.get(socket.id) || 'Jogador';
+          playerNames.set(socket.id, data.newName);
+          
+          // Notificar outros jogadores na sala sobre a mudança
+          socket.to(data.roomId).emit('player-name-updated', {
+            playerId: socket.id,
+            oldName: oldName,
+            newName: data.newName,
+          });
+        });
+
+        // Entrar em uma sala
+        socket.on('join-room', (roomId: string, playerName?: string) => {
+          console.log(`📥 Recebido join-room: ${roomId} de ${socket.id}`);
+          if (playerName) {
+            playerNames.set(socket.id, playerName);
+          }
+          socket.join(roomId);
+          const name = playerNames.get(socket.id) || 'Jogador';
+          console.log(`✅ Cliente ${socket.id} (${name}) entrou na sala ${roomId}`);
+          
+          // Notificar outros jogadores
+          socket.to(roomId).emit('player-joined', {
+            playerId: socket.id,
+            playerName: name,
+          });
+
+          // Enviar lista de jogadores na sala para o novo jogador
+          const room = io?.sockets.adapter.rooms.get(roomId);
+          if (room) {
+            const players = Array.from(room)
+              .map((id) => ({
+                id,
+                name: playerNames.get(id) || 'Jogador',
+              }))
+              .filter((p) => p.id !== socket.id);
+            socket.emit('room-players', { players });
+          }
+        });
+
+        // Sair de uma sala
+        socket.on('leave-room', (roomId: string) => {
+          socket.leave(roomId);
+          const name = playerNames.get(socket.id) || 'Jogador';
+          socket.to(roomId).emit('player-left', {
+            playerId: socket.id,
+            playerName: name,
+          });
+        });
+
+        // Enviar mensagem para a sala
+        socket.on('game-message', (data: { roomId: string; event: string; payload: any }) => {
+          const playerName = playerNames.get(socket.id) || 'Jogador';
+          socket.to(data.roomId).emit('game-message', {
+            event: data.event,
+            payload: data.payload,
+            from: socket.id,
+            fromName: playerName,
+          });
+        });
+
+        // Broadcast para a sala
+        socket.on('game-broadcast', (data: { roomId: string; event: string; payload: any }) => {
+          const playerName = playerNames.get(socket.id) || 'Jogador';
+          io?.to(data.roomId).emit('game-message', {
+            event: data.event,
+            payload: data.payload,
+            from: socket.id,
+            fromName: playerName,
+          });
+        });
+
+        socket.on('disconnect', () => {
+          const name = playerNames.get(socket.id) || 'Jogador';
+          console.log('Cliente desconectado:', socket.id, 'Nome:', name);
+          playerNames.delete(socket.id);
+        });
+      });
+      
       // Salvar referência no httpServer para reutilizar
       (httpServer as any)._io = io;
     } catch (error) {
@@ -50,107 +149,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }
   }
 
-  // Configurar handlers de conexão apenas uma vez
-  if (io && !(io as any)._handlersConfigured) {
-    io.on('connection', (socket) => {
-      // Obter nome inicial do auth ou usar padrão
-      const initialName = (socket.handshake.auth?.playerName as string) || 'Jogador';
-      playerNames.set(socket.id, initialName);
-      console.log('✅ Cliente conectado:', socket.id, 'Nome:', initialName);
-
-      // Atualizar nome do jogador
-      socket.on('update-player-name', (playerName: string) => {
-        const oldName = playerNames.get(socket.id) || 'Jogador';
-        playerNames.set(socket.id, playerName || 'Jogador');
-        console.log(`Jogador ${socket.id} atualizou nome de "${oldName}" para "${playerName}"`);
-      });
-
-      // Notificar mudança de nome na sala
-      socket.on('player-name-changed', (data: { roomId: string; newName: string }) => {
-        const oldName = playerNames.get(socket.id) || 'Jogador';
-        playerNames.set(socket.id, data.newName);
-        
-        // Notificar outros jogadores na sala sobre a mudança
-        socket.to(data.roomId).emit('player-name-updated', {
-          playerId: socket.id,
-          oldName: oldName,
-          newName: data.newName,
-        });
-      });
-
-      // Entrar em uma sala
-      socket.on('join-room', (roomId: string, playerName?: string) => {
-        console.log(`📥 Recebido join-room: ${roomId} de ${socket.id}`);
-        if (playerName) {
-          playerNames.set(socket.id, playerName);
-        }
-        socket.join(roomId);
-        const name = playerNames.get(socket.id) || 'Jogador';
-        console.log(`✅ Cliente ${socket.id} (${name}) entrou na sala ${roomId}`);
-        
-        // Notificar outros jogadores
-        socket.to(roomId).emit('player-joined', {
-          playerId: socket.id,
-          playerName: name,
-        });
-
-        // Enviar lista de jogadores na sala para o novo jogador
-        const room = io?.sockets.adapter.rooms.get(roomId);
-        if (room) {
-          const players = Array.from(room)
-            .map((id) => ({
-              id,
-              name: playerNames.get(id) || 'Jogador',
-            }))
-            .filter((p) => p.id !== socket.id);
-          socket.emit('room-players', { players });
-        }
-
-      });
-
-      // Sair de uma sala
-      socket.on('leave-room', (roomId: string) => {
-        socket.leave(roomId);
-        const name = playerNames.get(socket.id) || 'Jogador';
-        socket.to(roomId).emit('player-left', {
-          playerId: socket.id,
-          playerName: name,
-        });
-      });
-
-      // Enviar mensagem para a sala
-      socket.on('game-message', (data: { roomId: string; event: string; payload: any }) => {
-        const playerName = playerNames.get(socket.id) || 'Jogador';
-        socket.to(data.roomId).emit('game-message', {
-          event: data.event,
-          payload: data.payload,
-          from: socket.id,
-          fromName: playerName,
-        });
-      });
-
-      // Broadcast para a sala
-      socket.on('game-broadcast', (data: { roomId: string; event: string; payload: any }) => {
-        const playerName = playerNames.get(socket.id) || 'Jogador';
-        io?.to(data.roomId).emit('game-message', {
-          event: data.event,
-          payload: data.payload,
-          from: socket.id,
-          fromName: playerName,
-        });
-      });
-
-      socket.on('disconnect', () => {
-        const name = playerNames.get(socket.id) || 'Jogador';
-        console.log('Cliente desconectado:', socket.id, 'Nome:', name);
-        playerNames.delete(socket.id);
-      });
-    });
-    
-    // Marcar handlers como configurados
-    (io as any)._handlersConfigured = true;
+  // Para requisições GET, retornar status
+  // Para requisições POST do Socket.io, não fazer nada (deixar o Socket.io lidar)
+  if (req.method === 'GET') {
+    res.status(200).json({ status: 'ok', socket: io ? 'initialized' : 'not initialized' });
+  } else {
+    // Para POST, não responder - deixar o Socket.io lidar
+    res.status(200).end();
   }
-
-  res.status(200).json({ status: 'ok', socket: io ? 'initialized' : 'not initialized' });
 }
 
