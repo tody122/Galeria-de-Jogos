@@ -1,6 +1,6 @@
 {
   "name": "galeria-jogos-html",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Galeria web de jogos HTML autorais com suporte multiplayer",
   "private": true,
   "scripts": {
