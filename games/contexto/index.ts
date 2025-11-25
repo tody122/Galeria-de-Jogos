@@ -31,12 +31,24 @@ interface RoundState {
   roundEnded: boolean;
 }
 
+type GameMode = 'classic' | 'rapid' | 'difficulty' | 'timeAttack';
+
+interface GameModeConfig {
+  name: string;
+  description: string;
+  maxWords: number;
+  pointMultiplier: number;
+  hasTimer: boolean;
+  timerSeconds?: number;
+}
+
 interface GameState {
   players: Player[];
   team1: Player[];
   team2: Player[];
   spectators: Player[];
   isGameActive: boolean;
+  gameMode: GameMode | null;
   team1Score: number;
   team2Score: number;
   roundState: RoundState;
@@ -45,6 +57,38 @@ interface GameState {
 
 import { questions } from './questions';
 
+const GAME_MODES: Record<GameMode, GameModeConfig> = {
+  classic: {
+    name: 'Clássico',
+    description: 'Modo tradicional com 10 palavras. Quanto mais palavras ocultar, mais pontos ganha!',
+    maxWords: 10,
+    pointMultiplier: 1,
+    hasTimer: false,
+  },
+  rapid: {
+    name: 'Rápido',
+    description: 'Modo acelerado com 5 palavras. Jogo mais dinâmico e rápido!',
+    maxWords: 5,
+    pointMultiplier: 1.5,
+    hasTimer: false,
+  },
+  difficulty: {
+    name: 'Dificuldade',
+    description: 'Modo desafiador! Ocultar palavras vale mais pontos (x2).',
+    maxWords: 10,
+    pointMultiplier: 2,
+    hasTimer: false,
+  },
+  timeAttack: {
+    name: 'Time Attack',
+    description: 'Modo com timer! Você tem 60 segundos para adivinhar.',
+    maxWords: 10,
+    pointMultiplier: 1.5,
+    hasTimer: true,
+    timerSeconds: 60,
+  },
+};
+
 export default class ContextoGame {
   private container: HTMLElement;
   private socket: Socket | null;
@@ -52,6 +96,9 @@ export default class ContextoGame {
   private playerName: string;
   private gameState: GameState;
   private gameElement: HTMLElement | null = null;
+  private readonly STORAGE_KEY = 'contexto-game-state';
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
 
   constructor(config: GameConfig) {
     this.container = config.container;
@@ -65,6 +112,7 @@ export default class ContextoGame {
       team2: [],
       spectators: [],
       isGameActive: false,
+      gameMode: null,
       team1Score: 0,
       team2Score: 0,
       roundState: {
@@ -86,7 +134,8 @@ export default class ContextoGame {
   private init() {
     // Criar elemento do jogo
     this.gameElement = document.createElement('div');
-    this.gameElement.className = 'contexto-game';
+    const themeClass = this.getThemeClass();
+    this.gameElement.className = `contexto-game ${themeClass}`.trim();
     this.gameElement.innerHTML = this.getGameHTML();
     this.container.appendChild(this.gameElement);
 
@@ -96,14 +145,27 @@ export default class ContextoGame {
     // Configurar Socket.io se multiplayer
     if (this.socket && this.roomId) {
       this.setupSocketListeners();
-      // Adicionar este jogador à lista
-      this.addPlayer(this.socket.id || '1', this.playerName);
+      // Não adicionar o jogador aqui - o servidor enviará via room-players
+      // Isso garante que o admin seja determinado corretamente pelo servidor
     } else {
-      // Modo single player
-      this.addPlayer('1', this.playerName);
+      // Modo single player - é admin por padrão
+      this.addPlayer('1', this.playerName, true);
     }
 
     this.updateDisplay();
+  }
+
+  private getThemeClass(): string {
+    if (!this.gameState.isGameActive) {
+      return '';
+    }
+    const currentTeam = this.gameState.roundState.currentTeam;
+    if (currentTeam === 'team1') {
+      return 'team-blue-theme';
+    } else if (currentTeam === 'team2') {
+      return 'team-red-theme';
+    }
+    return '';
   }
 
   private getGameHTML(): string {
@@ -130,9 +192,7 @@ export default class ContextoGame {
             <div class="team-players" id="team1-players">
               ${this.getTeamPlayersHTML('team1')}
             </div>
-            <button class="join-team-btn" id="join-team1-btn" data-team="team1">
-              Entrar no Azul
-            </button>
+            ${this.getJoinTeamButtonHTML('team1')}
           </div>
 
           <div class="team-panel team2-panel">
@@ -140,9 +200,7 @@ export default class ContextoGame {
             <div class="team-players" id="team2-players">
               ${this.getTeamPlayersHTML('team2')}
             </div>
-            <button class="join-team-btn" id="join-team2-btn" data-team="team2">
-              Entrar no Vermelho
-            </button>
+            ${this.getJoinTeamButtonHTML('team2')}
           </div>
         </div>
 
@@ -168,6 +226,37 @@ export default class ContextoGame {
     `;
   }
 
+  private getJoinTeamButtonHTML(team: 'team1' | 'team2'): string {
+    const teamPlayers = this.gameState[team];
+    const isFull = teamPlayers.length >= 2;
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isInThisTeam = currentPlayer?.team === team;
+    const teamName = team === 'team1' ? 'Azul' : 'Vermelho';
+    const teamId = team === 'team1' ? 'team1' : 'team2';
+    
+    if (isFull && !isInThisTeam) {
+      return `
+        <button class="join-team-btn" id="join-${teamId}-btn" data-team="${teamId}" disabled>
+          Time Cheio (2/2)
+        </button>
+      `;
+    }
+    
+    if (isInThisTeam) {
+      return `
+        <button class="join-team-btn" id="join-${teamId}-btn" data-team="${teamId}" disabled>
+          Você está no ${teamName}
+        </button>
+      `;
+    }
+    
+    return `
+      <button class="join-team-btn" id="join-${teamId}-btn" data-team="${teamId}">
+        Entrar no ${teamName} (${teamPlayers.length}/2)
+      </button>
+    `;
+  }
+
   private getGameControlsHTML(): string {
     const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
     const isAdmin = currentPlayer?.isAdmin || false;
@@ -180,12 +269,33 @@ export default class ContextoGame {
       `;
     }
 
+    const selectedMode = this.gameState.gameMode || 'classic';
+    const canStart = this.gameState.team1.length === 2 && this.gameState.team2.length === 2;
+
     return `
       <div class="game-controls" id="game-controls">
-        <button class="start-game-btn" id="start-game-btn" disabled>
+        <div class="game-mode-selection">
+          <h3>Escolha o Modo de Jogo</h3>
+          <div class="game-modes-grid" id="game-modes-grid">
+            ${Object.entries(GAME_MODES).map(([modeKey, modeConfig]) => `
+              <div class="game-mode-card ${selectedMode === modeKey ? 'selected' : ''}" 
+                   data-mode="${modeKey}" 
+                   id="mode-${modeKey}">
+                <h4>${modeConfig.name}</h4>
+                <p class="mode-description">${modeConfig.description}</p>
+                <div class="mode-stats">
+                  <span>📝 ${modeConfig.maxWords} palavras</span>
+                  <span>⭐ ${modeConfig.pointMultiplier}x pontos</span>
+                  ${modeConfig.hasTimer ? `<span>⏱️ ${modeConfig.timerSeconds}s</span>` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+        <button class="start-game-btn" id="start-game-btn" ${canStart ? '' : 'disabled'}>
           Iniciar Jogo
         </button>
-        <p class="start-game-hint">Precisa de pelo menos 2 jogadores em cada time para começar</p>
+        <p class="start-game-hint">Precisa de exatamente 2 jogadores em cada time para começar</p>
       </div>
     `;
   }
@@ -241,6 +351,27 @@ export default class ContextoGame {
     return this.getLobbyHTML();
   }
 
+  private getPlayersListHTML(): string {
+    return `
+      <div class="game-sidebar players-sidebar">
+        <h3>👥 Jogadores</h3>
+        <div class="all-players-list">
+          ${this.gameState.players.map(player => {
+            const teamBadge = player.team === 'team1' ? '🔵' : player.team === 'team2' ? '🔴' : player.team === 'spectator' ? '👁️' : '';
+            const teamName = player.team === 'team1' ? 'Azul' : player.team === 'team2' ? 'Vermelho' : player.team === 'spectator' ? 'Telespectador' : 'Sem time';
+            return `
+              <div class="player-list-item ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
+                <span class="player-name">${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}</span>
+                ${player.team ? `<span class="player-team-badge">${teamBadge} ${teamName}</span>` : ''}
+                ${player.isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   private getScoreboardHTML(): string {
     return `
       <div class="scoreboard-panel">
@@ -250,8 +381,8 @@ export default class ContextoGame {
             <div class="score-value">${this.gameState.team1Score}</div>
             <div class="team-players-list">
               ${this.gameState.team1.map(player => `
-                <span class="scoreboard-player ${player.name === this.playerName ? 'you' : ''}">
-                  ${player.name}${player.name === this.playerName ? ' (você)' : ''}
+                <span class="scoreboard-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
+                  ${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}
                 </span>
               `).join('')}
             </div>
@@ -261,8 +392,8 @@ export default class ContextoGame {
             <div class="score-value">${this.gameState.team2Score}</div>
             <div class="team-players-list">
               ${this.gameState.team2.map(player => `
-                <span class="scoreboard-player ${player.name === this.playerName ? 'you' : ''}">
-                  ${player.name}${player.name === this.playerName ? ' (você)' : ''}
+                <span class="scoreboard-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
+                  ${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}
                 </span>
               `).join('')}
             </div>
@@ -272,13 +403,32 @@ export default class ContextoGame {
     `;
   }
 
+  private getScoreboardSidebarHTML(): string {
+    return `
+      <div class="game-sidebar scoreboard-sidebar">
+        ${this.getScoreboardHTML()}
+      </div>
+    `;
+  }
+
+  private getGameplayWrapper(content: string): string {
+    return `
+      <div class="gameplay-layout">
+        ${this.getPlayersListHTML()}
+        <div class="game-main-content">
+          ${content}
+        </div>
+        ${this.getScoreboardSidebarHTML()}
+      </div>
+    `;
+  }
+
   private getQuestionSelectorHTML(): string {
     const { question, visibleWords } = this.gameState.roundState;
     if (!question) return '';
 
-    return `
+    const content = `
       <div class="contexto-container">
-        ${this.getScoreboardHTML()}
         <div class="contexto-header">
           <h2>🎯 Sua Vez!</h2>
           <p class="game-subtitle">Oculte as palavras que desejar</p>
@@ -303,7 +453,11 @@ export default class ContextoGame {
           </div>
 
           <div class="selector-actions">
-            <p class="hidden-count">Palavras ocultadas: <span id="hidden-count">${visibleWords.filter(v => !v).length}</span> / 10</p>
+            ${(() => {
+              const modeConfig = this.gameState.gameMode ? GAME_MODES[this.gameState.gameMode] : GAME_MODES.classic;
+              const maxWords = modeConfig.maxWords;
+              return `<p class="hidden-count">Palavras ocultadas: <span id="hidden-count">${visibleWords.filter(v => !v).length}</span> / ${maxWords}</p>`;
+            })()}
             <p class="points-preview">Pontos possíveis: <span id="points-preview">${this.calculatePoints(visibleWords)}</span></p>
             <button class="submit-words-btn" id="submit-words-btn">
               Enviar Palavras
@@ -312,6 +466,8 @@ export default class ContextoGame {
         </div>
       </div>
     `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private getWaitingForWordsHTML(): string {
@@ -320,9 +476,8 @@ export default class ContextoGame {
     const playerName = currentPlayer?.name || 'Jogador';
     const teamName = currentTeam === 'team1' ? 'Azul' : 'Vermelho';
 
-    return `
+    const content = `
       <div class="contexto-container">
-        ${this.getScoreboardHTML()}
         <div class="contexto-header">
           <h2>🎯 Contexto</h2>
           <p class="game-subtitle">Aguardando seleção de palavras...</p>
@@ -336,6 +491,8 @@ export default class ContextoGame {
         </div>
       </div>
     `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private getSpectatorWordsHTML(): string {
@@ -347,9 +504,8 @@ export default class ContextoGame {
     const playerName = currentPlayer?.name || 'Jogador';
     const teamName = currentTeam === 'team1' ? 'Azul' : 'Vermelho';
 
-    return `
+    const content = `
       <div class="contexto-container">
-        ${this.getScoreboardHTML()}
         <div class="contexto-header">
           <h2>🎯 Contexto</h2>
           <p class="game-subtitle">${teamName} está tentando adivinhar!</p>
@@ -373,6 +529,8 @@ export default class ContextoGame {
         </div>
       </div>
     `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private getGuesserHTML(): string {
@@ -381,9 +539,8 @@ export default class ContextoGame {
 
     const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
 
-    return `
+    const content = `
       <div class="contexto-container">
-        ${this.getScoreboardHTML()}
         <div class="contexto-header">
           <h2>🎯 Adivinhe a Palavra!</h2>
           <p class="game-subtitle">Use as palavras visíveis para adivinhar</p>
@@ -412,12 +569,13 @@ export default class ContextoGame {
         </div>
       </div>
     `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private getWaitingHTML(): string {
-    return `
+    const content = `
       <div class="contexto-container">
-        ${this.getScoreboardHTML()}
         <div class="contexto-header">
           <h2>🎯 Contexto</h2>
           <p class="game-subtitle">Aguardando sua vez...</p>
@@ -427,6 +585,8 @@ export default class ContextoGame {
         </div>
       </div>
     `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private getRoundEndHTML(): string {
@@ -436,9 +596,8 @@ export default class ContextoGame {
     const isCorrect = normalizedGuess === normalizedAnswer;
     const currentTeam = this.gameState.roundState.currentTeam;
 
-    return `
+    const content = `
       <div class="contexto-container">
-        ${this.getScoreboardHTML()}
         <div class="contexto-header">
           <h2>🎯 Resultado da Rodada</h2>
         </div>
@@ -458,13 +617,16 @@ export default class ContextoGame {
         </div>
       </div>
     `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private calculatePoints(visibleWords: boolean[]): number {
     const hiddenCount = visibleWords.filter(v => !v).length;
     // Mais palavras ocultadas = mais pontos
-    // 0 ocultadas = 1 ponto, 10 ocultadas = 10 pontos
-    return hiddenCount;
+    // Aplicar multiplicador do modo
+    const modeConfig = this.gameState.gameMode ? GAME_MODES[this.gameState.gameMode] : GAME_MODES.classic;
+    return Math.floor(hiddenCount * modeConfig.pointMultiplier);
   }
 
   private normalizeWord(word: string): string {
@@ -555,9 +717,10 @@ export default class ContextoGame {
     return teamPlayers
       .map(
         (player) => `
-        <div class="team-player ${player.name === this.playerName ? 'you' : ''}">
-          <span class="player-name">${player.name}</span>
+        <div class="team-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
+          <span class="player-name">${player.name}${player.isAdmin ? ' 👑' : ''}</span>
           ${player.name === this.playerName ? '<span class="you-badge">você</span>' : ''}
+          ${player.isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
         </div>
       `
       )
@@ -572,9 +735,10 @@ export default class ContextoGame {
     return waitingPlayers
       .map(
         (player) => `
-        <div class="waiting-player ${player.name === this.playerName ? 'you' : ''}">
-          <span class="player-name">${player.name}</span>
+        <div class="waiting-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
+          <span class="player-name">${player.name}${player.isAdmin ? ' 👑' : ''}</span>
           ${player.name === this.playerName ? '<span class="you-badge">você</span>' : ''}
+          ${player.isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
         </div>
       `
       )
@@ -589,9 +753,10 @@ export default class ContextoGame {
     return spectators
       .map(
         (player) => `
-        <div class="spectator-player ${player.name === this.playerName ? 'you' : ''}">
-          <span class="player-name">${player.name}</span>
+        <div class="spectator-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
+          <span class="player-name">${player.name}${player.isAdmin ? ' 👑' : ''}</span>
           ${player.name === this.playerName ? '<span class="you-badge">você</span>' : ''}
+          ${player.isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
         </div>
       `
       )
@@ -618,6 +783,21 @@ export default class ContextoGame {
     joinSpectatorBtn?.addEventListener('click', () => {
       this.joinSpectator();
     });
+
+    // Listener para seleção de modo
+    const gameModesGrid = this.gameElement.querySelector('#game-modes-grid');
+    if (gameModesGrid) {
+      gameModesGrid.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const modeCard = target.closest('.game-mode-card') as HTMLElement;
+        if (modeCard) {
+          const mode = modeCard.getAttribute('data-mode') as GameMode;
+          if (mode) {
+            this.selectGameMode(mode);
+          }
+        }
+      });
+    }
 
     startGameBtn?.addEventListener('click', (e) => {
       e.preventDefault();
@@ -700,7 +880,9 @@ export default class ContextoGame {
     const pointsPreview = this.gameElement.querySelector('#points-preview');
     
     if (hiddenCount) {
-      hiddenCount.textContent = visibleWords.filter(v => !v).length.toString();
+      const modeConfig = this.gameState.gameMode ? GAME_MODES[this.gameState.gameMode] : GAME_MODES.classic;
+      const hidden = visibleWords.filter(v => !v).length;
+      hiddenCount.textContent = `${hidden} / ${modeConfig.maxWords}`;
     }
     if (pointsPreview) {
       pointsPreview.textContent = this.calculatePoints(visibleWords).toString();
@@ -796,12 +978,19 @@ export default class ContextoGame {
 
     // Nova pergunta aleatória
     const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
+    // Aplicar número de palavras do modo
+    const modeConfig = this.gameState.gameMode ? GAME_MODES[this.gameState.gameMode] : GAME_MODES.classic;
+    const questionWords = randomQuestion.words.slice(0, modeConfig.maxWords);
+    const adaptedQuestion = {
+      ...randomQuestion,
+      words: questionWords,
+    };
 
     this.gameState.roundState = {
       currentTeam: nextTeam,
       currentPlayerId: nextPlayer.id,
-      question: randomQuestion,
-      visibleWords: Array.from({ length: 10 }, () => true), // Todas visíveis inicialmente
+      question: adaptedQuestion,
+      visibleWords: Array.from({ length: modeConfig.maxWords }, () => true), // Todas visíveis inicialmente
       guess: '',
       points: 0,
       roundStarted: false,
@@ -816,12 +1005,29 @@ export default class ContextoGame {
         payload: {
           currentTeam: nextTeam,
           currentPlayerId: nextPlayer.id,
-          question: randomQuestion,
+          question: adaptedQuestion,
+          gameMode: this.gameState.gameMode,
         },
       });
     }
 
     this.updateDisplay();
+  }
+
+  private selectGameMode(mode: GameMode) {
+    this.gameState.gameMode = mode;
+    this.updateDisplay();
+    
+    // Enviar para outros jogadores
+    if (this.socket && this.roomId) {
+      this.socket.emit('game-broadcast', {
+        roomId: this.roomId,
+        event: 'game-mode-selected',
+        payload: {
+          mode: mode,
+        },
+      });
+    }
   }
 
   private startGame() {
@@ -838,13 +1044,20 @@ export default class ContextoGame {
       return;
     }
     
-    // Verificar se há pelo menos 2 jogadores em cada time
-    if (this.gameState.team1.length < 2 || this.gameState.team2.length < 2) {
-      alert('Precisa de pelo menos 2 jogadores em cada time para começar!');
+    // Verificar se há exatamente 2 jogadores em cada time
+    if (this.gameState.team1.length !== 2 || this.gameState.team2.length !== 2) {
+      alert('Precisa de exatamente 2 jogadores em cada time para começar!');
       return;
     }
 
-    console.log('Iniciando jogo...');
+    // Verificar se um modo foi selecionado
+    if (!this.gameState.gameMode) {
+      alert('Por favor, selecione um modo de jogo antes de iniciar!');
+      return;
+    }
+
+    const gameModeConfig = GAME_MODES[this.gameState.gameMode];
+    console.log('Iniciando jogo no modo:', this.gameState.gameMode, gameModeConfig);
     this.gameState.isGameActive = true;
     this.gameState.currentRound = 1;
 
@@ -860,13 +1073,19 @@ export default class ContextoGame {
     console.log('Socket ID atual:', this.socket?.id);
     
     const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
-    console.log('Pergunta selecionada:', randomQuestion);
+    // Aplicar número de palavras do modo
+    const questionWords = randomQuestion.words.slice(0, gameModeConfig.maxWords);
+    const adaptedQuestion = {
+      ...randomQuestion,
+      words: questionWords,
+    };
+    console.log('Pergunta selecionada:', adaptedQuestion);
 
     this.gameState.roundState = {
       currentTeam: 'team1',
       currentPlayerId: firstPlayer.id,
-      question: randomQuestion,
-      visibleWords: Array.from({ length: 10 }, () => true),
+      question: adaptedQuestion,
+      visibleWords: Array.from({ length: gameModeConfig.maxWords }, () => true),
       guess: '',
       points: 0,
       roundStarted: false,
@@ -885,7 +1104,8 @@ export default class ContextoGame {
         payload: {
           currentTeam: 'team1',
           currentPlayerId: firstPlayer.id,
-          question: randomQuestion,
+          question: adaptedQuestion,
+          gameMode: this.gameState.gameMode,
         },
       });
     }
@@ -904,13 +1124,24 @@ export default class ContextoGame {
       return;
     }
 
+    // Verificar se o jogador já está no time (permitir sair e entrar novamente)
+    const isAlreadyInTeam = player.team === team;
+    
+    // Verificar se o time está cheio (máximo 2 jogadores)
+    const targetTeam = this.gameState[team];
+    if (!isAlreadyInTeam && targetTeam.length >= 2) {
+      const teamName = team === 'team1' ? 'Azul' : 'Vermelho';
+      alert(`O time ${teamName} está cheio! Máximo de 2 jogadores por time.`);
+      return;
+    }
+
     // Remover de qualquer time/status anterior
     if (player.team === 'spectator') {
       const index = this.gameState.spectators.findIndex((p) => p.id === player.id);
       if (index !== -1) {
         this.gameState.spectators.splice(index, 1);
       }
-    } else if (player.team) {
+    } else if (player.team && player.team !== team) {
       const previousTeam = this.gameState[player.team];
       const index = previousTeam.findIndex((p) => p.id === player.id);
       if (index !== -1) {
@@ -918,13 +1149,13 @@ export default class ContextoGame {
       }
     }
 
-    // Adicionar ao novo time
+    // Adicionar ao novo time (se ainda não estiver)
     player.team = team;
-    const newTeam = this.gameState[team];
-    if (!newTeam.find((p) => p.id === player.id)) {
-      newTeam.push(player);
+    if (!targetTeam.find((p) => p.id === player.id)) {
+      targetTeam.push(player);
     }
 
+    this.saveGameState(); // Salvar após mudanças
     this.updateDisplay();
     this.updateStartButton();
 
@@ -966,6 +1197,7 @@ export default class ContextoGame {
       this.gameState.spectators.push(player);
     }
 
+    this.saveGameState(); // Salvar após mudanças
     this.updateDisplay();
     this.updateStartButton();
 
@@ -988,25 +1220,26 @@ export default class ContextoGame {
     if (startGameBtn) {
       const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
       const isAdmin = currentPlayer?.isAdmin || false;
-      const canStart = isAdmin && this.gameState.team1.length >= 2 && this.gameState.team2.length >= 2;
+      const canStart = isAdmin && this.gameState.team1.length === 2 && this.gameState.team2.length === 2;
       startGameBtn.disabled = !canStart;
     }
   }
 
-  private addPlayer(id: string, name: string) {
+  private addPlayer(id: string, name: string, isAdmin: boolean = false) {
     // Verificar se já existe
-    if (this.gameState.players.find((p) => p.id === id || p.name === name)) {
+    const existingPlayer = this.gameState.players.find((p) => p.id === id || p.name === name);
+    if (existingPlayer) {
+      // Atualizar informações do jogador existente
+      existingPlayer.name = name;
+      existingPlayer.isAdmin = isAdmin;
       return;
     }
-
-    // Verificar se já existe um admin
-    const hasAdmin = this.gameState.players.some((p) => p.isAdmin);
     
     const newPlayer: Player = {
       id,
       name,
       team: null,
-      isAdmin: !hasAdmin, // Primeiro jogador vira admin
+      isAdmin: isAdmin,
     };
 
     this.gameState.players.push(newPlayer);
@@ -1014,6 +1247,10 @@ export default class ContextoGame {
 
   private updateDisplay() {
     if (!this.gameElement) return;
+
+    // Aplicar classe do tema
+    const themeClass = this.getThemeClass();
+    this.gameElement.className = `contexto-game ${themeClass}`.trim();
 
     // Recriar HTML completo
     this.gameElement.innerHTML = this.getGameHTML();
@@ -1027,56 +1264,208 @@ export default class ContextoGame {
     }
   }
 
+  private processRoomPlayers(data: { players: Array<{ id: string; name: string; isAdmin?: boolean }>; adminId?: string | null }) {
+    console.log('📥 Processando room-players:', data);
+    console.log('📦 Payload completo:', JSON.stringify(data, null, 2));
+    console.log('🔍 Tipo de adminId:', typeof data.adminId);
+    console.log('🔍 Valor de adminId:', data.adminId);
+    
+    // Aguardar um pouco se socket.id não estiver disponível
+    let currentPlayerId = this.socket?.id;
+    if (!currentPlayerId) {
+      console.warn('⚠️ socket.id não disponível imediatamente, aguardando...');
+      // Tentar novamente após um pequeno delay
+      setTimeout(() => {
+        currentPlayerId = this.socket?.id;
+        if (currentPlayerId) {
+          console.log('✅ socket.id agora disponível:', currentPlayerId);
+          this.processRoomPlayers(data); // Processar novamente
+        } else {
+          console.error('❌ socket.id ainda não disponível após aguardar');
+        }
+      }, 100);
+      return;
+    }
+    
+    console.log('🆔 ID do jogador atual:', currentPlayerId);
+    console.log('👑 AdminId recebido:', data.adminId);
+    console.log('✅ É admin?', String(currentPlayerId) === String(data.adminId));
+    
+    // Sempre processar, mesmo se players for undefined ou vazio
+    const players = data.players || [];
+    
+    // Limpar TODOS os jogadores - vamos reconstruir a lista do zero
+    this.gameState.players = [];
+    this.gameState.team1 = [];
+    this.gameState.team2 = [];
+    this.gameState.spectators = [];
+    
+    // Adicionar jogadores da sala com informação de admin do servidor
+    players.forEach((roomPlayer) => {
+      const isAdmin = Boolean(roomPlayer.isAdmin || (data.adminId && String(roomPlayer.id) === String(data.adminId)));
+      console.log(`➕ Adicionando jogador: ${roomPlayer.name} (${roomPlayer.id}), admin: ${isAdmin}`);
+      this.addPlayer(roomPlayer.id, roomPlayer.name, isAdmin);
+    });
+    
+    // Adicionar este jogador - verificar se é admin
+    // Garantir que adminId seja processado corretamente
+    const adminIdStr = data.adminId ? String(data.adminId).trim() : '';
+    const currentPlayerIdStr = String(currentPlayerId).trim();
+    const currentPlayerIsAdmin = adminIdStr !== '' && currentPlayerIdStr === adminIdStr;
+    
+    console.log(`➕ Adicionando jogador atual: ${this.playerName} (${currentPlayerIdStr})`);
+    console.log(`🔍 AdminId recebido: "${adminIdStr}"`);
+    console.log(`🔍 Comparação: "${currentPlayerIdStr}" === "${adminIdStr}" = ${currentPlayerIsAdmin}`);
+    console.log(`👑 Este jogador é admin? ${currentPlayerIsAdmin}`);
+    
+    this.addPlayer(currentPlayerId, this.playerName, currentPlayerIsAdmin);
+    
+    // Verificar se há admin após adicionar todos
+    let hasAdmin = this.gameState.players.some((p) => p.isAdmin);
+    console.log('👑 Há admin na lista?', hasAdmin);
+    
+    // Se não há admin e há jogadores, definir o primeiro como admin (fallback)
+    if (!hasAdmin && this.gameState.players.length > 0) {
+      console.warn('⚠️ Nenhum admin encontrado! Definindo o primeiro jogador como admin (fallback)');
+      this.gameState.players[0].isAdmin = true;
+      hasAdmin = true;
+      console.log(`✅ ${this.gameState.players[0].name} (${this.gameState.players[0].id}) agora é admin`);
+    }
+    
+    console.log('📋 Lista de jogadores:', this.gameState.players.map(p => ({ name: p.name, id: p.id, isAdmin: p.isAdmin })));
+    
+    this.updateDisplay();
+  }
+
+  private saveGameState() {
+    if (!this.roomId) return; // Só salvar se estiver em uma sala
+    
+    try {
+      const stateToSave = {
+        roomId: this.roomId,
+        playerName: this.playerName,
+        gameState: {
+          ...this.gameState,
+          // Não salvar referências de objetos complexos que não podem ser serializados
+          roundState: {
+            ...this.gameState.roundState,
+            question: this.gameState.roundState.question ? {
+              question: this.gameState.roundState.question.question,
+              words: this.gameState.roundState.question.words,
+              answer: this.gameState.roundState.question.answer,
+            } : null,
+          },
+        },
+        timestamp: Date.now(),
+      };
+      
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(stateToSave));
+      console.log('💾 Estado do jogo salvo no localStorage');
+    } catch (error) {
+      console.error('❌ Erro ao salvar estado do jogo:', error);
+    }
+  }
+
+  private loadGameState(): { roomId: string; playerName: string; gameState: GameState } | null {
+    try {
+      const saved = localStorage.getItem(this.STORAGE_KEY);
+      if (!saved) return null;
+      
+      const state = JSON.parse(saved);
+      
+      // Verificar se o estado não é muito antigo (mais de 1 hora)
+      const oneHour = 60 * 60 * 1000;
+      if (Date.now() - state.timestamp > oneHour) {
+        console.log('⏰ Estado salvo muito antigo, ignorando');
+        localStorage.removeItem(this.STORAGE_KEY);
+        return null;
+      }
+      
+      console.log('📂 Estado do jogo carregado do localStorage');
+      return state;
+    } catch (error) {
+      console.error('❌ Erro ao carregar estado do jogo:', error);
+      localStorage.removeItem(this.STORAGE_KEY);
+      return null;
+    }
+  }
+
+  private clearSavedState() {
+    localStorage.removeItem(this.STORAGE_KEY);
+    console.log('🗑️ Estado salvo removido');
+  }
+
   private setupSocketListeners() {
     if (!this.socket) return;
 
+    // Detectar desconexão
+    this.socket.on('disconnect', (reason: string) => {
+      console.log('⚠️ Desconectado do servidor:', reason);
+      this.saveGameState(); // Salvar estado antes de desconectar
+      this.showReconnectionMessage();
+    });
+
+    // Detectar reconexão
+    this.socket.on('reconnect', (attemptNumber: number) => {
+      console.log('✅ Reconectado ao servidor após', attemptNumber, 'tentativas');
+      this.reconnectAttempts = 0;
+      this.hideReconnectionMessage();
+      this.handleReconnection();
+    });
+
+    // Detectar tentativas de reconexão
+    this.socket.on('reconnect_attempt', (attemptNumber: number) => {
+      console.log('🔄 Tentando reconectar... Tentativa', attemptNumber);
+      this.reconnectAttempts = attemptNumber;
+      this.showReconnectionMessage(attemptNumber);
+    });
+
+    // Detectar falha na reconexão
+    this.socket.on('reconnect_failed', () => {
+      console.error('❌ Falha ao reconectar após várias tentativas');
+      this.showReconnectionError();
+    });
+
     // Listener para quando jogadores entram/saem da sala
-    this.socket.on('player-joined', (data: { playerId: string; playerName: string }) => {
-      this.addPlayer(data.playerId, data.playerName);
+    this.socket.on('player-joined', (data: { playerId: string; playerName: string; isAdmin?: boolean }) => {
+      this.addPlayer(data.playerId, data.playerName, data.isAdmin || false);
+      this.saveGameState(); // Salvar após mudanças
       this.updateDisplay();
     });
 
     this.socket.on('player-left', (data: { playerId: string }) => {
-      // Verificar se o jogador que saiu era admin
-      const leavingPlayer = this.gameState.players.find((p) => p.id === data.playerId);
-      const wasAdmin = leavingPlayer?.isAdmin || false;
-      
       // Remover jogador
       this.gameState.players = this.gameState.players.filter((p) => p.id !== data.playerId);
       this.gameState.team1 = this.gameState.team1.filter((p) => p.id !== data.playerId);
       this.gameState.team2 = this.gameState.team2.filter((p) => p.id !== data.playerId);
       this.gameState.spectators = this.gameState.spectators.filter((p) => p.id !== data.playerId);
       
-      // Se o admin saiu, transferir admin para o primeiro jogador restante
-      if (wasAdmin && this.gameState.players.length > 0) {
-        this.gameState.players[0].isAdmin = true;
-      }
+      this.saveGameState(); // Salvar após mudanças
+      this.saveGameState(); // Salvar após mudanças
+      this.updateDisplay();
+    });
+
+    this.socket.on('admin-changed', (data: { newAdminId: string; newAdminName: string }) => {
+      // Remover admin de todos os jogadores
+      this.gameState.players.forEach((p) => {
+        p.isAdmin = p.id === data.newAdminId;
+      });
+      // Atualizar também nos times
+      this.gameState.team1.forEach((p) => {
+        p.isAdmin = p.id === data.newAdminId;
+      });
+      this.gameState.team2.forEach((p) => {
+        p.isAdmin = p.id === data.newAdminId;
+      });
+      this.gameState.spectators.forEach((p) => {
+        p.isAdmin = p.id === data.newAdminId;
+      });
       
       this.updateDisplay();
     });
 
-    this.socket.on('room-players', (data: { players: Array<{ id: string; name: string }> }) => {
-      if (data.players && Array.isArray(data.players)) {
-        // Limpar jogadores existentes (exceto o atual) para evitar duplicatas
-        const currentPlayerId = this.socket?.id || '1';
-        this.gameState.players = this.gameState.players.filter((p) => p.id === currentPlayerId);
-        
-        // Adicionar jogadores da sala
-        data.players.forEach((roomPlayer) => {
-          this.addPlayer(roomPlayer.id, roomPlayer.name);
-        });
-        
-        // Garantir que este jogador está na lista
-        this.addPlayer(currentPlayerId, this.playerName);
-        
-        // Garantir que há um admin (primeiro jogador)
-        const hasAdmin = this.gameState.players.some((p) => p.isAdmin);
-        if (!hasAdmin && this.gameState.players.length > 0) {
-          this.gameState.players[0].isAdmin = true;
-        }
-        
-        this.updateDisplay();
-      }
+    this.socket.on('room-players', (data: { players: Array<{ id: string; name: string; isAdmin?: boolean }>; adminId?: string }) => {
+      this.processRoomPlayers(data);
     });
 
     this.socket.on('game-message', (data: { event: string; payload: any; from: string; fromName?: string }) => {
@@ -1138,15 +1527,26 @@ export default class ContextoGame {
             this.updateStartButton();
           }
           break;
+        case 'game-mode-selected':
+          const { mode } = data.payload;
+          if (mode && (mode === 'classic' || mode === 'rapid' || mode === 'difficulty' || mode === 'timeAttack')) {
+            this.gameState.gameMode = mode;
+            this.updateDisplay();
+          }
+          break;
         case 'game-started':
         case 'round-started':
-          const { currentTeam, currentPlayerId, question } = data.payload;
+          const { currentTeam, currentPlayerId, question, gameMode } = data.payload;
           this.gameState.isGameActive = true;
+          if (gameMode) {
+            this.gameState.gameMode = gameMode;
+          }
+          const modeConfig = this.gameState.gameMode ? GAME_MODES[this.gameState.gameMode] : GAME_MODES.classic;
           this.gameState.roundState = {
             currentTeam,
             currentPlayerId,
             question,
-            visibleWords: Array.from({ length: 10 }, () => true),
+            visibleWords: Array.from({ length: modeConfig.maxWords }, () => true),
             guess: '',
             points: 0,
             roundStarted: false,
@@ -1196,7 +1596,149 @@ export default class ContextoGame {
     }
   }
 
+  private showReconnectionMessage(attemptNumber?: number) {
+    if (!this.gameElement) return;
+    
+    let message = '🔄 Reconectando...';
+    if (attemptNumber) {
+      message = `🔄 Reconectando... (Tentativa ${attemptNumber})`;
+    }
+    
+    // Remover mensagem anterior se existir
+    const existingMsg = this.gameElement.querySelector('.reconnection-message');
+    if (existingMsg) {
+      existingMsg.remove();
+    }
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'reconnection-message';
+    messageDiv.textContent = message;
+    messageDiv.style.cssText = `
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #ff9800;
+      color: white;
+      padding: 1rem 2rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 10000;
+      font-weight: 600;
+      animation: pulse 1.5s infinite;
+    `;
+    
+    // Adicionar animação CSS
+    if (!document.querySelector('#reconnection-styles')) {
+      const style = document.createElement('style');
+      style.id = 'reconnection-styles';
+      style.textContent = `
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.7; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    document.body.appendChild(messageDiv);
+  }
+
+  private hideReconnectionMessage() {
+    const message = document.querySelector('.reconnection-message');
+    if (message) {
+      message.remove();
+    }
+  }
+
+  private showReconnectionError() {
+    if (!this.gameElement) return;
+    
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'reconnection-error';
+    messageDiv.innerHTML = `
+      <div style="text-align: center;">
+        <p style="margin-bottom: 1rem;">❌ Falha ao reconectar</p>
+        <button id="reconnect-manual-btn" style="
+          padding: 0.5rem 1.5rem;
+          background: #2196f3;
+          color: white;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+          font-weight: 600;
+        ">Tentar Novamente</button>
+      </div>
+    `;
+    messageDiv.style.cssText = `
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #f44336;
+      color: white;
+      padding: 1.5rem 2rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 10000;
+      font-weight: 600;
+      min-width: 300px;
+    `;
+    
+    document.body.appendChild(messageDiv);
+    
+    // Botão de reconexão manual
+    const reconnectBtn = messageDiv.querySelector('#reconnect-manual-btn');
+    reconnectBtn?.addEventListener('click', () => {
+      if (this.socket) {
+        this.socket.connect();
+        messageDiv.remove();
+      }
+    });
+  }
+
+  private handleReconnection() {
+    if (!this.socket || !this.roomId) return;
+    
+    console.log('🔄 Processando reconexão...');
+    
+    // Carregar estado salvo
+    const savedState = this.loadGameState();
+    
+    if (savedState && savedState.roomId === this.roomId) {
+      console.log('📂 Restaurando estado salvo...');
+      
+      // Restaurar estado do jogo (mas não sobrescrever com dados antigos se o jogo já está ativo)
+      if (!this.gameState.isGameActive && savedState.gameState.isGameActive) {
+        // Se o jogo estava ativo quando desconectou, restaurar
+        this.gameState = savedState.gameState;
+        console.log('✅ Estado do jogo restaurado');
+      }
+      
+      // Reentrar na sala
+      console.log(`🚪 Reentrando na sala ${this.roomId}...`);
+      this.socket.emit('join-room', this.roomId, this.playerName);
+      
+      // Aguardar um pouco e então sincronizar com o servidor
+      setTimeout(() => {
+        // O servidor enviará room-players automaticamente
+        // Mas podemos também solicitar sincronização se necessário
+        console.log('✅ Reconexão completa');
+      }, 500);
+    } else {
+      // Se não há estado salvo ou a sala mudou, apenas reentrar
+      console.log(`🚪 Reentrando na sala ${this.roomId}...`);
+      this.socket.emit('join-room', this.roomId, this.playerName);
+    }
+    
+    // Salvar estado após reconexão
+    this.saveGameState();
+  }
+
   public destroy() {
+    // Salvar estado antes de destruir
+    this.saveGameState();
+    
     if (this.gameElement && this.gameElement.parentNode) {
       this.gameElement.parentNode.removeChild(this.gameElement);
     }
