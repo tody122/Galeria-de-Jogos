@@ -29,9 +29,11 @@ interface RoundState {
   points: number; // Pontos baseados em quantas palavras foram ocultadas
   roundStarted: boolean;
   roundEnded: boolean;
+  revealedWordsCount?: number; // Para modo todos contra todos - quantas palavras foram reveladas
+  nextRevealPlayerId?: string | null; // Próximo jogador que pode revelar uma palavra
 }
 
-type GameMode = 'classic' | 'rapid' | 'difficulty' | 'timeAttack';
+type GameMode = 'classic' | 'freeForAll';
 
 interface GameModeConfig {
   name: string;
@@ -51,6 +53,7 @@ interface GameState {
   gameMode: GameMode | null;
   team1Score: number;
   team2Score: number;
+  playerScores: Map<string, number>; // Pontuação individual para modo todos contra todos
   roundState: RoundState;
   currentRound: number;
 }
@@ -60,34 +63,20 @@ import { questions } from './questions';
 const GAME_MODES: Record<GameMode, GameModeConfig> = {
   classic: {
     name: 'Clássico',
-    description: 'Modo tradicional com 10 palavras. Quanto mais palavras ocultar, mais pontos ganha!',
+    description: 'Modo tradicional com times. Um jogador oculta palavras e o time adivinha!',
     maxWords: 10,
     pointMultiplier: 1,
     hasTimer: false,
   },
-  rapid: {
-    name: 'Rápido',
-    description: 'Modo acelerado com 5 palavras. Jogo mais dinâmico e rápido!',
-    maxWords: 5,
-    pointMultiplier: 1.5,
-    hasTimer: false,
-  },
-  difficulty: {
-    name: 'Dificuldade',
-    description: 'Modo desafiador! Ocultar palavras vale mais pontos (x2).',
+  freeForAll: {
+    name: 'Todos Contra Todos',
+    description: 'Modo individual! Todos jogam sozinhos e revelam palavras uma por vez.',
     maxWords: 10,
-    pointMultiplier: 2,
+    pointMultiplier: 1,
     hasTimer: false,
-  },
-  timeAttack: {
-    name: 'Time Attack',
-    description: 'Modo com timer! Você tem 60 segundos para adivinhar.',
-    maxWords: 10,
-    pointMultiplier: 1.5,
-    hasTimer: true,
-    timerSeconds: 60,
   },
 };
+
 
 export default class ContextoGame {
   private container: HTMLElement;
@@ -115,6 +104,7 @@ export default class ContextoGame {
       gameMode: null,
       team1Score: 0,
       team2Score: 0,
+      playerScores: new Map(),
       roundState: {
         currentTeam: null,
         currentPlayerId: null,
@@ -124,6 +114,8 @@ export default class ContextoGame {
         points: 0,
         roundStarted: false,
         roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: null,
       },
       currentRound: 0,
     };
@@ -270,7 +262,17 @@ export default class ContextoGame {
     }
 
     const selectedMode = this.gameState.gameMode || 'classic';
-    const canStart = this.gameState.team1.length === 2 && this.gameState.team2.length === 2;
+    let canStart = false;
+    let startHint = '';
+    
+    if (selectedMode === 'classic') {
+      canStart = this.gameState.team1.length === 2 && this.gameState.team2.length === 2;
+      startHint = 'Precisa de exatamente 2 jogadores em cada time para começar';
+    } else if (selectedMode === 'freeForAll') {
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      canStart = availablePlayers.length >= 2;
+      startHint = `Modo Todos Contra Todos: precisa de pelo menos 2 jogadores (${availablePlayers.length} disponíveis). Times não são necessários!`;
+    }
 
     return `
       <div class="game-controls" id="game-controls">
@@ -292,21 +294,29 @@ export default class ContextoGame {
             `).join('')}
           </div>
         </div>
+        ${selectedMode === 'classic' ? `
         <div class="admin-controls">
           <button class="randomize-teams-btn" id="randomize-teams-btn">
             🎲 Aleatorizar Times
           </button>
           <p class="randomize-hint">Distribui todos os jogadores aleatoriamente entre os times</p>
         </div>
+        ` : ''}
         <button class="start-game-btn" id="start-game-btn" ${canStart ? '' : 'disabled'}>
           Iniciar Jogo
         </button>
-        <p class="start-game-hint">Precisa de exatamente 2 jogadores em cada time para começar</p>
+        <p class="start-game-hint">${startHint}</p>
       </div>
     `;
   }
 
   private getGameplayHTML(): string {
+    // Modo todos contra todos tem lógica diferente
+    if (this.gameState.gameMode === 'freeForAll') {
+      return this.getFreeForAllHTML();
+    }
+
+    // Modo clássico (lógica original)
     const _currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
     const isCurrentPlayer = this.gameState.roundState.currentPlayerId === _currentPlayer?.id;
     const isInCurrentTeam = _currentPlayer?.team === this.gameState.roundState.currentTeam;
@@ -355,6 +365,121 @@ export default class ContextoGame {
 
     console.log('Retornando lobbyHTML (fallback)');
     return this.getLobbyHTML();
+  }
+
+  private getFreeForAllHTML(): string {
+    const { question, visibleWords, nextRevealPlayerId, revealedWordsCount } = this.gameState.roundState;
+    if (!question) return '';
+
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isSpectator = currentPlayer?.team === 'spectator';
+    const canReveal = currentPlayer?.id === nextRevealPlayerId && !isSpectator;
+    const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+    const nextPlayer = availablePlayers.find(p => p.id === nextRevealPlayerId);
+    
+    const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
+
+    if (this.gameState.roundState.roundEnded) {
+      return this.getFreeForAllRoundEndHTML();
+    }
+
+    const content = `
+      <div class="contexto-container">
+        <div class="contexto-header">
+          <h2>🎯 Todos Contra Todos</h2>
+          <p class="game-subtitle">Revele palavras uma por vez e adivinhe!</p>
+        </div>
+
+        <div class="free-for-all-game">
+          <div class="reveal-section">
+            ${canReveal ? `
+              <div class="reveal-controls">
+                <p class="reveal-hint">🎲 É sua vez! Escolha uma palavra para revelar:</p>
+                <div class="words-grid" id="reveal-words-grid">
+                  ${question.words.map((word, index) => `
+                    <button 
+                      class="word-btn reveal-btn ${visibleWords[index] ? 'revealed' : 'hidden'}" 
+                      data-index="${index}"
+                      id="reveal-word-${index}"
+                      ${visibleWords[index] ? 'disabled style="opacity: 0.5; cursor: not-allowed;"' : ''}
+                    >
+                      ${visibleWords[index] ? word : '?'}
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            ` : `
+              <div class="waiting-reveal">
+                <p>⏳ Aguardando <strong>${nextPlayer?.name || 'outro jogador'}</strong> revelar uma palavra...</p>
+                <p class="revealed-count">Palavras reveladas: ${revealedWordsCount || 0} / ${question.words.length}</p>
+              </div>
+            `}
+          </div>
+
+          <div class="formatted-question">
+            <h3>Frase Atual:</h3>
+            <div class="question-display">
+              <p class="formatted-question-text">${formattedQuestion}</p>
+            </div>
+          </div>
+
+          ${!isSpectator ? `
+            <div class="guess-input-section">
+              <input 
+                type="text" 
+                id="guess-input" 
+                class="guess-input" 
+                placeholder="Digite sua resposta..."
+                autocomplete="off"
+              />
+              <button class="submit-guess-btn" id="submit-guess-btn">
+                Enviar Resposta
+              </button>
+            </div>
+          ` : `
+            <div class="spectator-note">
+              <p>👁️ Você é telespectador e não pode participar</p>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+    
+    return this.getGameplayWrapper(content);
+  }
+
+  private getFreeForAllRoundEndHTML(): string {
+    const { question, guess } = this.gameState.roundState;
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const playerScore = this.gameState.playerScores.get(currentPlayer?.id || '') || 0;
+    const normalizedGuess = this.normalizeWord(guess.trim());
+    const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
+    const isCorrect = normalizedGuess === normalizedAnswer;
+
+    const content = `
+      <div class="contexto-container">
+        <div class="contexto-header">
+          <h2>🎯 Resultado da Rodada</h2>
+        </div>
+
+        <div class="round-result">
+          <div class="result-info">
+            <p class="answer-reveal">Resposta correta: <strong>${question?.answer}</strong></p>
+            <p class="guess-result ${isCorrect ? 'correct' : 'incorrect'}">
+              ${isCorrect ? '✅ Você acertou!' : '❌ Você errou!'}
+            </p>
+            ${isCorrect ? `<p class="points-earned">+${this.gameState.roundState.points} pontos!</p>` : ''}
+            <p class="your-score">Sua pontuação total: <strong>${playerScore}</strong> pontos</p>
+          </div>
+
+          <button class="next-round-btn" id="next-round-btn">
+            Próxima Rodada
+          </button>
+        </div>
+      </div>
+    `;
+    
+    return this.getGameplayWrapper(content);
   }
 
   private getPlayersListHTML(): string {
@@ -410,6 +535,30 @@ export default class ContextoGame {
   }
 
   private getScoreboardSidebarHTML(): string {
+    // No modo todos contra todos, mostrar pontuação individual
+    if (this.gameState.gameMode === 'freeForAll' && this.gameState.isGameActive) {
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      return `
+        <div class="game-sidebar scoreboard-sidebar">
+          <div class="scoreboard-panel">
+            <h3>📊 Pontuação</h3>
+            <div class="individual-scores">
+              ${availablePlayers.map(player => {
+                const score = this.gameState.playerScores.get(player.id) || 0;
+                const isYou = player.name === this.playerName;
+                return `
+                  <div class="score-item ${isYou ? 'you' : ''}">
+                    <span class="player-name">${player.name}${isYou ? ' (você)' : ''}</span>
+                    <span class="score-value">${score}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    
     return `
       <div class="game-sidebar scoreboard-sidebar">
         ${this.getScoreboardHTML()}
@@ -824,7 +973,7 @@ export default class ContextoGame {
   private setupGameplayListeners() {
     if (!this.gameElement) return;
 
-    // Listener para palavras (question selector)
+    // Listener para palavras (question selector) - modo clássico
     const wordsGrid = this.gameElement.querySelector('#words-grid');
     if (wordsGrid) {
       wordsGrid.addEventListener('click', (e) => {
@@ -832,6 +981,20 @@ export default class ContextoGame {
         if (target.classList.contains('word-btn')) {
           const index = parseInt(target.getAttribute('data-index') || '0');
           this.toggleWord(index);
+        }
+      });
+    }
+
+    // Listener para revelar palavras - modo todos contra todos
+    const revealWordsGrid = this.gameElement.querySelector('#reveal-words-grid');
+    if (revealWordsGrid) {
+      revealWordsGrid.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.classList.contains('reveal-btn')) {
+          const btn = target as HTMLButtonElement;
+          if (btn.disabled) return;
+          const index = parseInt(target.getAttribute('data-index') || '0');
+          this.revealWord(index);
         }
       });
     }
@@ -939,55 +1102,115 @@ export default class ContextoGame {
     const normalizedGuess = this.normalizeWord(guess.trim());
     const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
     const isCorrect = normalizedGuess === normalizedAnswer;
-    const currentTeam = this.gameState.roundState.currentTeam;
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
 
-    if (isCorrect && currentTeam) {
-      if (currentTeam === 'team1') {
-        this.gameState.team1Score += this.gameState.roundState.points;
-      } else {
-        this.gameState.team2Score += this.gameState.roundState.points;
+    if (this.gameState.gameMode === 'freeForAll') {
+      // Modo todos contra todos: pontuação individual
+      if (isCorrect && currentPlayer) {
+        const currentScore = this.gameState.playerScores.get(currentPlayer.id) || 0;
+        // Pontos baseados em quantas palavras ainda estão ocultas
+        const hiddenCount = this.gameState.roundState.visibleWords.filter(v => !v).length;
+        const points = hiddenCount;
+        this.gameState.playerScores.set(currentPlayer.id, currentScore + points);
+        this.gameState.roundState.points = points;
       }
+
+      // Enviar resultado
+      if (this.socket && this.roomId) {
+        this.socket.emit('game-broadcast', {
+          roomId: this.roomId,
+          event: 'free-for-all-guess',
+          payload: {
+            playerId: currentPlayer?.id,
+            playerName: this.playerName,
+            guess: guess,
+            isCorrect: isCorrect,
+            points: isCorrect ? this.gameState.roundState.points : 0,
+            playerScores: Array.from(this.gameState.playerScores.entries()),
+          },
+        });
+      }
+
+      this.gameState.roundState.roundEnded = true;
+    } else {
+      // Modo clássico: pontuação por time
+      const currentTeam = this.gameState.roundState.currentTeam;
+      if (isCorrect && currentTeam) {
+        if (currentTeam === 'team1') {
+          this.gameState.team1Score += this.gameState.roundState.points;
+        } else {
+          this.gameState.team2Score += this.gameState.roundState.points;
+        }
+      }
+
+      // Enviar resultado
+      if (this.socket && this.roomId) {
+        this.socket.emit('game-broadcast', {
+          roomId: this.roomId,
+          event: 'guess-submitted',
+          payload: {
+            guess: guess,
+            isCorrect: isCorrect,
+            points: isCorrect ? this.gameState.roundState.points : 0,
+            team: currentTeam,
+          },
+        });
+      }
+
+      this.gameState.roundState.roundEnded = true;
     }
 
-    // Enviar resultado
+    this.saveGameState();
+    this.updateDisplay();
+  }
+
+  private revealWord(index: number) {
+    if (this.gameState.gameMode !== 'freeForAll') return;
+    
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const canReveal = currentPlayer?.id === this.gameState.roundState.nextRevealPlayerId;
+    
+    if (!canReveal) {
+      alert('Não é sua vez de revelar uma palavra!');
+      return;
+    }
+
+    if (this.gameState.roundState.visibleWords[index]) {
+      alert('Esta palavra já foi revelada!');
+      return;
+    }
+
+    // Revelar a palavra
+    this.gameState.roundState.visibleWords[index] = true;
+    this.gameState.roundState.revealedWordsCount = (this.gameState.roundState.revealedWordsCount || 0) + 1;
+
+    // Rotacionar para o próximo jogador
+    const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+    const currentIndex = availablePlayers.findIndex(p => p.id === currentPlayer?.id);
+    const nextIndex = (currentIndex + 1) % availablePlayers.length;
+    this.gameState.roundState.nextRevealPlayerId = availablePlayers[nextIndex]?.id || null;
+
+    // Enviar para outros jogadores
     if (this.socket && this.roomId) {
       this.socket.emit('game-broadcast', {
         roomId: this.roomId,
-        event: 'guess-submitted',
+        event: 'word-revealed',
         payload: {
-          guess: guess,
-          isCorrect: isCorrect,
-          points: isCorrect ? this.gameState.roundState.points : 0,
-          team: currentTeam,
+          wordIndex: index,
+          visibleWords: this.gameState.roundState.visibleWords,
+          revealedWordsCount: this.gameState.roundState.revealedWordsCount,
+          nextRevealPlayerId: this.gameState.roundState.nextRevealPlayerId,
         },
       });
     }
 
-    this.gameState.roundState.roundEnded = true;
+    this.saveGameState();
     this.updateDisplay();
   }
 
   private nextRound() {
     this.gameState.currentRound++;
     
-    // Alternar time
-    const nextTeam = this.gameState.roundState.currentTeam === 'team1' ? 'team2' : 'team1';
-    const nextTeamPlayers = this.gameState[nextTeam];
-    
-    if (nextTeamPlayers.length === 0) {
-      // Se não há jogadores no time, voltar ao lobby
-      this.gameState.isGameActive = false;
-      this.updateDisplay();
-      return;
-    }
-
-    // Próximo jogador do time (rotação)
-    const currentPlayerIndex = nextTeamPlayers.findIndex(
-      (p) => p.id === this.gameState.roundState.currentPlayerId
-    );
-    const nextPlayerIndex = (currentPlayerIndex + 1) % nextTeamPlayers.length;
-    const nextPlayer = nextTeamPlayers[nextPlayerIndex];
-
     // Nova pergunta aleatória
     const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
     // Aplicar número de palavras do modo
@@ -998,31 +1221,80 @@ export default class ContextoGame {
       words: questionWords,
     };
 
-    this.gameState.roundState = {
-      currentTeam: nextTeam,
-      currentPlayerId: nextPlayer.id,
-      question: adaptedQuestion,
-      visibleWords: Array.from({ length: modeConfig.maxWords }, () => true), // Todas visíveis inicialmente
-      guess: '',
-      points: 0,
-      roundStarted: false,
-      roundEnded: false,
-    };
+    if (this.gameState.gameMode === 'freeForAll') {
+      // Modo todos contra todos: nova rodada com todas as palavras ocultas
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      const firstPlayer = availablePlayers[0];
+      
+      this.gameState.roundState = {
+        currentTeam: null,
+        currentPlayerId: null,
+        question: adaptedQuestion,
+        visibleWords: Array.from({ length: modeConfig.maxWords }, () => false), // Todas ocultas
+        guess: '',
+        points: 0,
+        roundStarted: true,
+        roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: firstPlayer?.id || null,
+      };
+    } else {
+      // Modo clássico: alternar time
+      const nextTeam = this.gameState.roundState.currentTeam === 'team1' ? 'team2' : 'team1';
+      const nextTeamPlayers = this.gameState[nextTeam];
+      
+      if (nextTeamPlayers.length === 0) {
+        // Se não há jogadores no time, voltar ao lobby
+        this.gameState.isGameActive = false;
+        this.updateDisplay();
+        return;
+      }
+
+      // Próximo jogador do time (rotação)
+      const currentPlayerIndex = nextTeamPlayers.findIndex(
+        (p) => p.id === this.gameState.roundState.currentPlayerId
+      );
+      const nextPlayerIndex = (currentPlayerIndex + 1) % nextTeamPlayers.length;
+      const nextPlayer = nextTeamPlayers[nextPlayerIndex];
+
+      this.gameState.roundState = {
+        currentTeam: nextTeam,
+        currentPlayerId: nextPlayer.id,
+        question: adaptedQuestion,
+        visibleWords: Array.from({ length: modeConfig.maxWords }, () => true), // Todas visíveis inicialmente
+        guess: '',
+        points: 0,
+        roundStarted: false,
+        roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: null,
+      };
+    }
 
     // Enviar para outros jogadores
     if (this.socket && this.roomId) {
+      const payload: any = {
+        question: adaptedQuestion,
+        gameMode: this.gameState.gameMode,
+      };
+      
+      if (this.gameState.gameMode === 'classic') {
+        payload.currentTeam = this.gameState.roundState.currentTeam;
+        payload.currentPlayerId = this.gameState.roundState.currentPlayerId;
+      } else if (this.gameState.gameMode === 'freeForAll') {
+        payload.visibleWords = this.gameState.roundState.visibleWords;
+        payload.nextRevealPlayerId = this.gameState.roundState.nextRevealPlayerId;
+        payload.revealedWordsCount = this.gameState.roundState.revealedWordsCount;
+      }
+      
       this.socket.emit('game-broadcast', {
         roomId: this.roomId,
         event: 'round-started',
-        payload: {
-          currentTeam: nextTeam,
-          currentPlayerId: nextPlayer.id,
-          question: adaptedQuestion,
-          gameMode: this.gameState.gameMode,
-        },
+        payload,
       });
     }
 
+    this.saveGameState();
     this.updateDisplay();
   }
 
@@ -1138,12 +1410,6 @@ export default class ContextoGame {
       return;
     }
     
-    // Verificar se há exatamente 2 jogadores em cada time
-    if (this.gameState.team1.length !== 2 || this.gameState.team2.length !== 2) {
-      alert('Precisa de exatamente 2 jogadores em cada time para começar!');
-      return;
-    }
-
     // Verificar se um modo foi selecionado
     if (!this.gameState.gameMode) {
       alert('Por favor, selecione um modo de jogo antes de iniciar!');
@@ -1152,20 +1418,30 @@ export default class ContextoGame {
 
     const gameModeConfig = GAME_MODES[this.gameState.gameMode];
     console.log('Iniciando jogo no modo:', this.gameState.gameMode, gameModeConfig);
+    
+    // Validações específicas por modo
+    if (this.gameState.gameMode === 'classic') {
+      // Modo clássico: precisa de exatamente 2 jogadores em cada time
+      if (this.gameState.team1.length !== 2 || this.gameState.team2.length !== 2) {
+        alert('Precisa de exatamente 2 jogadores em cada time para começar!');
+        return;
+      }
+    } else if (this.gameState.gameMode === 'freeForAll') {
+      // Modo todos contra todos: precisa de pelo menos 2 jogadores (não telespectadores)
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      if (availablePlayers.length < 2) {
+        alert('Precisa de pelo menos 2 jogadores para começar!');
+        return;
+      }
+      // Inicializar pontuação individual
+      availablePlayers.forEach(player => {
+        this.gameState.playerScores.set(player.id, 0);
+      });
+    }
+
     this.gameState.isGameActive = true;
     this.gameState.currentRound = 1;
 
-    // Começar com Azul, primeiro jogador
-    const firstPlayer = this.gameState.team1[0];
-    if (!firstPlayer) {
-      console.error('Nenhum jogador no Azul!');
-      return;
-    }
-    
-    console.log('Primeiro jogador:', firstPlayer);
-    console.log('ID do primeiro jogador:', firstPlayer.id);
-    console.log('Socket ID atual:', this.socket?.id);
-    
     const randomQuestion = questions[Math.floor(Math.random() * questions.length)];
     // Aplicar número de palavras do modo
     const questionWords = randomQuestion.words.slice(0, gameModeConfig.maxWords);
@@ -1175,16 +1451,46 @@ export default class ContextoGame {
     };
     console.log('Pergunta selecionada:', adaptedQuestion);
 
-    this.gameState.roundState = {
-      currentTeam: 'team1',
-      currentPlayerId: firstPlayer.id,
-      question: adaptedQuestion,
-      visibleWords: Array.from({ length: gameModeConfig.maxWords }, () => true),
-      guess: '',
-      points: 0,
-      roundStarted: false,
-      roundEnded: false,
-    };
+    // Inicializar roundState baseado no modo
+    if (this.gameState.gameMode === 'classic') {
+      // Modo clássico: começar com Azul, primeiro jogador
+      const firstPlayer = this.gameState.team1[0];
+      if (!firstPlayer) {
+        console.error('Nenhum jogador no Azul!');
+        return;
+      }
+      
+      this.gameState.roundState = {
+        currentTeam: 'team1',
+        currentPlayerId: firstPlayer.id,
+        question: adaptedQuestion,
+        visibleWords: Array.from({ length: gameModeConfig.maxWords }, () => true),
+        guess: '',
+        points: 0,
+        roundStarted: false,
+        roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: null,
+      };
+    } else if (this.gameState.gameMode === 'freeForAll') {
+      // Modo todos contra todos: todos começam com todas as palavras ocultas
+      // Primeiro jogador pode revelar uma palavra
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      const firstPlayer = availablePlayers[0];
+      
+      this.gameState.roundState = {
+        currentTeam: null,
+        currentPlayerId: null,
+        question: adaptedQuestion,
+        visibleWords: Array.from({ length: gameModeConfig.maxWords }, () => false), // Todas ocultas
+        guess: '',
+        points: 0,
+        roundStarted: true, // Jogo já começa ativo
+        roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: firstPlayer?.id || null,
+      };
+    }
     
     console.log('Round state criado:', this.gameState.roundState);
 
@@ -1192,15 +1498,24 @@ export default class ContextoGame {
 
     // Enviar para outros jogadores
     if (this.socket && this.roomId) {
+      const payload: any = {
+        question: adaptedQuestion,
+        gameMode: this.gameState.gameMode,
+      };
+      
+      if (this.gameState.gameMode === 'classic') {
+        payload.currentTeam = 'team1';
+        payload.currentPlayerId = this.gameState.roundState.currentPlayerId;
+      } else if (this.gameState.gameMode === 'freeForAll') {
+        payload.visibleWords = this.gameState.roundState.visibleWords;
+        payload.nextRevealPlayerId = this.gameState.roundState.nextRevealPlayerId;
+        payload.revealedWordsCount = this.gameState.roundState.revealedWordsCount;
+      }
+      
       this.socket.emit('game-broadcast', {
         roomId: this.roomId,
         event: 'game-started',
-        payload: {
-          currentTeam: 'team1',
-          currentPlayerId: firstPlayer.id,
-          question: adaptedQuestion,
-          gameMode: this.gameState.gameMode,
-        },
+        payload,
       });
     }
 
@@ -1314,7 +1629,15 @@ export default class ContextoGame {
     if (startGameBtn) {
       const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
       const isAdmin = currentPlayer?.isAdmin || false;
-      const canStart = isAdmin && this.gameState.team1.length === 2 && this.gameState.team2.length === 2;
+      
+      let canStart = false;
+      if (this.gameState.gameMode === 'classic') {
+        canStart = isAdmin && this.gameState.team1.length === 2 && this.gameState.team2.length === 2;
+      } else if (this.gameState.gameMode === 'freeForAll') {
+        const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+        canStart = isAdmin && availablePlayers.length >= 2;
+      }
+      
       startGameBtn.disabled = !canStart;
     }
   }
@@ -1623,9 +1946,10 @@ export default class ContextoGame {
           break;
         case 'game-mode-selected':
           const { mode } = data.payload;
-          if (mode && (mode === 'classic' || mode === 'rapid' || mode === 'difficulty' || mode === 'timeAttack')) {
+          if (mode && (mode === 'classic' || mode === 'freeForAll')) {
             this.gameState.gameMode = mode;
             this.updateDisplay();
+            this.updateStartButton();
           }
           break;
         case 'teams-randomized':
@@ -1669,22 +1993,49 @@ export default class ContextoGame {
           break;
         case 'game-started':
         case 'round-started':
-          const { currentTeam, currentPlayerId, question, gameMode } = data.payload;
+          const { currentTeam, currentPlayerId, question, gameMode, visibleWords: ffaVisibleWords, nextRevealPlayerId: ffaNextRevealId, revealedWordsCount: ffaRevealedCount, playerScores } = data.payload;
           this.gameState.isGameActive = true;
           if (gameMode) {
             this.gameState.gameMode = gameMode;
           }
           const modeConfig = this.gameState.gameMode ? GAME_MODES[this.gameState.gameMode] : GAME_MODES.classic;
-          this.gameState.roundState = {
-            currentTeam,
-            currentPlayerId,
-            question,
-            visibleWords: Array.from({ length: modeConfig.maxWords }, () => true),
-            guess: '',
-            points: 0,
-            roundStarted: false,
-            roundEnded: false,
-          };
+          
+          if (gameMode === 'freeForAll') {
+            // Modo todos contra todos
+            this.gameState.roundState = {
+              currentTeam: null,
+              currentPlayerId: null,
+              question,
+              visibleWords: ffaVisibleWords || Array.from({ length: modeConfig.maxWords }, () => false),
+              guess: '',
+              points: 0,
+              roundStarted: true,
+              roundEnded: false,
+              revealedWordsCount: ffaRevealedCount || 0,
+              nextRevealPlayerId: ffaNextRevealId || null,
+            };
+            // Atualizar pontuações individuais
+            if (playerScores) {
+              playerScores.forEach(([id, score]: [string, number]) => {
+                this.gameState.playerScores.set(id, score);
+              });
+            }
+          } else {
+            // Modo clássico
+            this.gameState.roundState = {
+              currentTeam,
+              currentPlayerId,
+              question,
+              visibleWords: Array.from({ length: modeConfig.maxWords }, () => true),
+              guess: '',
+              points: 0,
+              roundStarted: false,
+              roundEnded: false,
+              revealedWordsCount: 0,
+              nextRevealPlayerId: null,
+            };
+          }
+          this.saveGameState();
           this.updateDisplay();
           break;
         case 'words-submitted':
@@ -1706,6 +2057,29 @@ export default class ContextoGame {
               this.gameState.team2Score += earnedPoints;
             }
           }
+          this.saveGameState();
+          this.updateDisplay();
+          break;
+        case 'word-revealed':
+          const { wordIndex: _wordIndex, visibleWords: newVisibleWords, revealedWordsCount, nextRevealPlayerId } = data.payload;
+          this.gameState.roundState.visibleWords = newVisibleWords;
+          this.gameState.roundState.revealedWordsCount = revealedWordsCount;
+          this.gameState.roundState.nextRevealPlayerId = nextRevealPlayerId;
+          this.saveGameState();
+          this.updateDisplay();
+          break;
+        case 'free-for-all-guess':
+          const { playerId: guessPlayerId, playerName: _guessPlayerName, guess: ffaGuess, isCorrect: ffaIsCorrect, points: ffaPoints, playerScores: newPlayerScores } = data.payload;
+          this.gameState.roundState.guess = ffaGuess;
+          this.gameState.roundState.roundEnded = true;
+          if (ffaIsCorrect && guessPlayerId) {
+            // Atualizar pontuações individuais
+            newPlayerScores.forEach(([id, score]: [string, number]) => {
+              this.gameState.playerScores.set(id, score);
+            });
+            this.gameState.roundState.points = ffaPoints;
+          }
+          this.saveGameState();
           this.updateDisplay();
           break;
       }
