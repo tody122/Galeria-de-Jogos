@@ -14,9 +14,9 @@ interface GameConfig {
 }
 
 export default class ExemploPhaserGame {
-  private container: HTMLElement;
-  private socket: Socket | null;
-  private roomId?: string;
+  public container: HTMLElement;
+  public socket: Socket | null;
+  public roomId?: string;
   private game: any = null; // Phaser.Game
 
   constructor(config: GameConfig) {
@@ -31,6 +31,45 @@ export default class ExemploPhaserGame {
     try {
       const Phaser = await import('phaser');
       
+      // Criar uma cena customizada
+      class GameScene extends Phaser.Scene {
+        private gameInstance: ExemploPhaserGame;
+        
+        constructor(gameInstance: ExemploPhaserGame) {
+          super({ key: 'GameScene' });
+          this.gameInstance = gameInstance;
+        }
+        
+        preload() {
+          // Carregar assets aqui
+          // this.load.image('logo', 'path/to/logo.png');
+        }
+        
+        create() {
+          // Criar objetos do jogo
+          // const logo = this.add.image(400, 300, 'logo');
+          
+          // Exemplo: criar um sprite simples
+          const graphics = this.add.graphics();
+          graphics.fillStyle(0x00ff00, 1);
+          graphics.fillCircle(400, 300, 50);
+          
+          // Exemplo com física
+          const ball = this.physics.add.sprite(400, 100, '');
+          ball.setBounce(0.7);
+          ball.setCollideWorldBounds(true);
+          
+          // Configurar Socket.io se multiplayer
+          if (this.gameInstance.socket && this.gameInstance.roomId) {
+            this.gameInstance.setupSocketListeners();
+          }
+        }
+        
+        update() {
+          // Loop de atualização do jogo
+        }
+      }
+      
       const config: Phaser.Types.Core.GameConfig = {
         type: Phaser.AUTO,
         width: 800,
@@ -43,11 +82,7 @@ export default class ExemploPhaserGame {
             debug: false,
           },
         },
-        scene: {
-          preload: this.preload.bind(this),
-          create: this.create.bind(this),
-          update: this.update.bind(this),
-        },
+        scene: new GameScene(this),
       };
 
       this.game = new Phaser.Game(config);
@@ -56,35 +91,6 @@ export default class ExemploPhaserGame {
       // Fallback: criar canvas simples
       this.createFallback();
     }
-  }
-
-  private preload(this: Phaser.Scene) {
-    // Carregar assets aqui
-    // this.load.image('logo', 'path/to/logo.png');
-  }
-
-  private create(this: Phaser.Scene) {
-    // Criar objetos do jogo
-    // const logo = this.add.image(400, 300, 'logo');
-    
-    // Exemplo: criar um sprite simples
-    const graphics = this.add.graphics();
-    graphics.fillStyle(0x00ff00, 1);
-    graphics.fillCircle(400, 300, 50);
-    
-    // Exemplo com física
-    const ball = this.physics.add.sprite(400, 100, '');
-    ball.setBounce(0.7);
-    ball.setCollideWorldBounds(true);
-    
-    // Configurar Socket.io se multiplayer
-    if (this.socket && this.roomId) {
-      this.setupSocketListeners();
-    }
-  }
-
-  private update(this: Phaser.Scene) {
-    // Loop de atualização do jogo
   }
 
   private createFallback() {
