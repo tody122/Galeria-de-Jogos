@@ -1,0 +1,17 @@
+import { Game } from '@/types/game';
+
+export const gamesList: Game[] = [
+  {
+    id: 'contexto',
+    name: 'Contexto',
+    description: 'Adivinhe a palavra secreta usando dicas! Quanto mais próximo, menor a distância.',
+    multiplayer: true,
+  },
+  {
+    id: 'exemplo-single',
+    name: 'Jogo Single Player',
+    description: 'Exemplo de jogo para um jogador',
+    multiplayer: false,
+  },
+];
+
