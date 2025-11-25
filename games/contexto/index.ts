@@ -468,7 +468,7 @@ export default class ContextoGame {
             <p class="guess-result ${isCorrect ? 'correct' : 'incorrect'}">
               ${isCorrect ? '✅ Você acertou!' : '❌ Você errou!'}
             </p>
-            ${isCorrect ? `<p class="points-earned">+${this.gameState.roundState.points} pontos!</p>` : ''}
+            ${isCorrect ? `<p class="points-earned">+${this.gameState.roundState.points} pontos!</p>` : `<p class="points-lost">-5 pontos!</p>`}
             <p class="your-score">Sua pontuação total: <strong>${playerScore}</strong> pontos</p>
           </div>
 
@@ -1106,13 +1106,22 @@ export default class ContextoGame {
 
     if (this.gameState.gameMode === 'freeForAll') {
       // Modo todos contra todos: pontuação individual
-      if (isCorrect && currentPlayer) {
+      if (currentPlayer) {
         const currentScore = this.gameState.playerScores.get(currentPlayer.id) || 0;
-        // Pontos baseados em quantas palavras ainda estão ocultas
-        const hiddenCount = this.gameState.roundState.visibleWords.filter(v => !v).length;
-        const points = hiddenCount;
-        this.gameState.playerScores.set(currentPlayer.id, currentScore + points);
-        this.gameState.roundState.points = points;
+        
+        if (isCorrect) {
+          // Pontos baseados em quantas palavras ainda estão ocultas
+          const hiddenCount = this.gameState.roundState.visibleWords.filter(v => !v).length;
+          const points = hiddenCount;
+          this.gameState.playerScores.set(currentPlayer.id, currentScore + points);
+          this.gameState.roundState.points = points;
+        } else {
+          // Errou: perde 5 pontos
+          const penalty = -5;
+          const newScore = Math.max(0, currentScore + penalty); // Não permite pontuação negativa
+          this.gameState.playerScores.set(currentPlayer.id, newScore);
+          this.gameState.roundState.points = penalty;
+        }
       }
 
       // Enviar resultado
@@ -1125,7 +1134,7 @@ export default class ContextoGame {
             playerName: this.playerName,
             guess: guess,
             isCorrect: isCorrect,
-            points: isCorrect ? this.gameState.roundState.points : 0,
+            points: this.gameState.roundState.points,
             playerScores: Array.from(this.gameState.playerScores.entries()),
           },
         });
@@ -2069,16 +2078,16 @@ export default class ContextoGame {
           this.updateDisplay();
           break;
         case 'free-for-all-guess':
-          const { playerId: guessPlayerId, playerName: _guessPlayerName, guess: ffaGuess, isCorrect: ffaIsCorrect, points: ffaPoints, playerScores: newPlayerScores } = data.payload;
+          const { playerId: _guessPlayerId, playerName: _guessPlayerName, guess: ffaGuess, isCorrect: _ffaIsCorrect, points: ffaPoints, playerScores: newPlayerScores } = data.payload;
           this.gameState.roundState.guess = ffaGuess;
           this.gameState.roundState.roundEnded = true;
-          if (ffaIsCorrect && guessPlayerId) {
-            // Atualizar pontuações individuais
+          // Atualizar pontuações individuais (tanto para acerto quanto erro)
+          if (newPlayerScores) {
             newPlayerScores.forEach(([id, score]: [string, number]) => {
               this.gameState.playerScores.set(id, score);
             });
-            this.gameState.roundState.points = ffaPoints;
           }
+          this.gameState.roundState.points = ffaPoints;
           this.saveGameState();
           this.updateDisplay();
           break;

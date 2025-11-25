@@ -1193,6 +1193,13 @@
   margin-top: 1rem;
 }
 
+.points-lost {
+  font-size: 1.2rem;
+  color: #f44336;
+  font-weight: 600;
+  margin-top: 1rem;
+}
+
 .scoreboard {
   display: grid;
   grid-template-columns: 1fr 1fr;
