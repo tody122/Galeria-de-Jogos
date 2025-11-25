@@ -11,6 +11,7 @@ interface Player {
   id: string;
   name: string;
   team: 'team1' | 'team2' | 'spectator' | null;
+  isAdmin?: boolean;
 }
 
 interface Question {
@@ -162,12 +163,29 @@ export default class ContextoGame {
           </button>
         </div>
 
+        ${this.getGameControlsHTML()}
+      </div>
+    `;
+  }
+
+  private getGameControlsHTML(): string {
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isAdmin = currentPlayer?.isAdmin || false;
+    
+    if (!isAdmin) {
+      return `
         <div class="game-controls" id="game-controls">
-          <button class="start-game-btn" id="start-game-btn" disabled>
-            Iniciar Jogo
-          </button>
-          <p class="start-game-hint">Precisa de pelo menos 2 jogadores em cada time para começar</p>
+          <p class="start-game-hint">Aguardando o administrador iniciar o jogo...</p>
         </div>
+      `;
+    }
+
+    return `
+      <div class="game-controls" id="game-controls">
+        <button class="start-game-btn" id="start-game-btn" disabled>
+          Iniciar Jogo
+        </button>
+        <p class="start-game-hint">Precisa de pelo menos 2 jogadores em cada time para começar</p>
       </div>
     `;
   }
@@ -324,7 +342,7 @@ export default class ContextoGame {
     const { question, visibleWords, currentPlayerId, currentTeam } = this.gameState.roundState;
     if (!question) return '';
 
-    const visibleWordsList = question.words.filter((_, index) => visibleWords[index]);
+    const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
     const currentPlayer = this.gameState.players.find((p) => p.id === currentPlayerId);
     const playerName = currentPlayer?.name || 'Jogador';
     const teamName = currentTeam === 'team1' ? 'Azul' : 'Vermelho';
@@ -342,12 +360,10 @@ export default class ContextoGame {
             <p><strong>${playerName}</strong> do ${teamName} escolheu estas palavras:</p>
           </div>
           
-          <div class="visible-words">
-            <h3>Palavras visíveis:</h3>
-            <div class="words-display">
-              ${visibleWordsList.map(word => `
-                <span class="visible-word-tag">${word}</span>
-              `).join('')}
+          <div class="formatted-question">
+            <h3>Frase:</h3>
+            <div class="question-display">
+              <p class="formatted-question-text">${formattedQuestion}</p>
             </div>
           </div>
 
@@ -363,7 +379,7 @@ export default class ContextoGame {
     const { question, visibleWords } = this.gameState.roundState;
     if (!question) return '';
 
-    const visibleWordsList = question.words.filter((_, index) => visibleWords[index]);
+    const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
 
     return `
       <div class="contexto-container">
@@ -374,12 +390,10 @@ export default class ContextoGame {
         </div>
 
         <div class="guesser-section">
-          <div class="visible-words">
-            <h3>Palavras visíveis:</h3>
-            <div class="words-display">
-              ${visibleWordsList.map(word => `
-                <span class="visible-word-tag">${word}</span>
-              `).join('')}
+          <div class="formatted-question">
+            <h3>Frase:</h3>
+            <div class="question-display">
+              <p class="formatted-question-text">${formattedQuestion}</p>
             </div>
           </div>
 
@@ -417,7 +431,9 @@ export default class ContextoGame {
 
   private getRoundEndHTML(): string {
     const { question, guess, points } = this.gameState.roundState;
-    const isCorrect = guess.toLowerCase().trim() === question?.answer.toLowerCase().trim();
+    const normalizedGuess = this.normalizeWord(guess.trim());
+    const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
+    const isCorrect = normalizedGuess === normalizedAnswer;
     const currentTeam = this.gameState.roundState.currentTeam;
 
     return `
@@ -449,6 +465,86 @@ export default class ContextoGame {
     // Mais palavras ocultadas = mais pontos
     // 0 ocultadas = 1 ponto, 10 ocultadas = 10 pontos
     return hiddenCount;
+  }
+
+  private normalizeWord(word: string): string {
+    // Remover acentos e caracteres especiais, converter para minúscula
+    return word
+      .normalize('NFD') // Decompõe caracteres acentuados
+      .replace(/[\u0300-\u036f]/g, '') // Remove diacríticos (acentos)
+      .replace(/[^\w]/g, '') // Remove caracteres não alfanuméricos
+      .toLowerCase();
+  }
+
+  private formatQuestionWithBlanks(question: Question, visibleWords: boolean[]): string {
+    // Criar um array de índices para rastrear qual palavra do array words já foi usada
+    const usedIndices = new Set<number>();
+    
+    // Dividir a frase preservando espaços e pontuação
+    // Usar regex que captura palavras (incluindo acentos), espaços e pontuação
+    const parts = question.question.split(/(\s+|[\p{P}\p{S}])/u);
+    
+    // Formatar cada parte
+    const formattedParts = parts.map(part => {
+      // Se for apenas espaços, manter como está
+      if (/^\s+$/.test(part)) {
+        return part;
+      }
+      
+      // Se for apenas pontuação ou símbolos, manter como está
+      if (/^[\p{P}\p{S}]+$/u.test(part)) {
+        return part;
+      }
+      
+      // É uma palavra - extrair a palavra sem pontuação para comparação
+      const wordOnly = part.replace(/[\p{P}\p{S}]/gu, '');
+      const normalizedWord = this.normalizeWord(wordOnly);
+      
+      if (!normalizedWord) {
+        // Não é uma palavra válida, manter como está
+        return part;
+      }
+      
+      // Procurar a palavra no array words (na ordem)
+      // Usar o primeiro índice disponível que corresponda
+      let foundIndex = -1;
+      for (let i = 0; i < question.words.length; i++) {
+        if (!usedIndices.has(i)) {
+          const wordNormalized = this.normalizeWord(question.words[i]);
+          if (wordNormalized === normalizedWord) {
+            foundIndex = i;
+            usedIndices.add(i);
+            break;
+          }
+        }
+      }
+      
+      if (foundIndex !== -1) {
+        // Palavra encontrada no array - verificar se está visível
+        const isVisible = visibleWords[foundIndex];
+        
+        if (isVisible) {
+          // Manter a palavra original com capitalização e pontuação
+          return part;
+        } else {
+          // Substituir a palavra por underscore, mantendo pontuação se houver
+          // Extrair apenas a pontuação (tudo que não é letra)
+          const punctuation = part.replace(/[\p{L}\p{N}]/gu, '');
+          return '_' + punctuation;
+        }
+      } else {
+        // Palavra não encontrada no array (pode ser pontuação ou palavra extra)
+        // Se tem caracteres alfanuméricos (incluindo acentos), substituir por underscore
+        if (/[\p{L}\p{N}]/u.test(part)) {
+          const punctuation = part.replace(/[\p{L}\p{N}]/gu, '');
+          return '_' + punctuation;
+        }
+        // Caso contrário, manter como está (pontuação pura)
+        return part;
+      }
+    });
+    
+    return formattedParts.join('');
   }
 
   private getTeamPlayersHTML(team: 'team1' | 'team2'): string {
@@ -646,7 +742,9 @@ export default class ContextoGame {
     this.gameState.roundState.guess = guess;
 
     const { question } = this.gameState.roundState;
-    const isCorrect = guess.toLowerCase() === question?.answer.toLowerCase();
+    const normalizedGuess = this.normalizeWord(guess.trim());
+    const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
+    const isCorrect = normalizedGuess === normalizedAnswer;
     const currentTeam = this.gameState.roundState.currentTeam;
 
     if (isCorrect && currentTeam) {
@@ -730,6 +828,15 @@ export default class ContextoGame {
     console.log('startGame chamado');
     console.log('Team1 length:', this.gameState.team1.length);
     console.log('Team2 length:', this.gameState.team2.length);
+    
+    // Verificar se o jogador atual é admin
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isAdmin = currentPlayer?.isAdmin || false;
+    
+    if (!isAdmin) {
+      alert('Apenas o administrador pode iniciar o jogo!');
+      return;
+    }
     
     // Verificar se há pelo menos 2 jogadores em cada time
     if (this.gameState.team1.length < 2 || this.gameState.team2.length < 2) {
@@ -879,7 +986,9 @@ export default class ContextoGame {
     if (!this.gameElement) return;
     const startGameBtn = this.gameElement.querySelector('#start-game-btn') as HTMLButtonElement;
     if (startGameBtn) {
-      const canStart = this.gameState.team1.length >= 2 && this.gameState.team2.length >= 2;
+      const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+      const isAdmin = currentPlayer?.isAdmin || false;
+      const canStart = isAdmin && this.gameState.team1.length >= 2 && this.gameState.team2.length >= 2;
       startGameBtn.disabled = !canStart;
     }
   }
@@ -890,10 +999,14 @@ export default class ContextoGame {
       return;
     }
 
+    // Verificar se já existe um admin
+    const hasAdmin = this.gameState.players.some((p) => p.isAdmin);
+    
     const newPlayer: Player = {
       id,
       name,
       team: null,
+      isAdmin: !hasAdmin, // Primeiro jogador vira admin
     };
 
     this.gameState.players.push(newPlayer);
@@ -924,21 +1037,44 @@ export default class ContextoGame {
     });
 
     this.socket.on('player-left', (data: { playerId: string }) => {
+      // Verificar se o jogador que saiu era admin
+      const leavingPlayer = this.gameState.players.find((p) => p.id === data.playerId);
+      const wasAdmin = leavingPlayer?.isAdmin || false;
+      
       // Remover jogador
       this.gameState.players = this.gameState.players.filter((p) => p.id !== data.playerId);
       this.gameState.team1 = this.gameState.team1.filter((p) => p.id !== data.playerId);
       this.gameState.team2 = this.gameState.team2.filter((p) => p.id !== data.playerId);
       this.gameState.spectators = this.gameState.spectators.filter((p) => p.id !== data.playerId);
+      
+      // Se o admin saiu, transferir admin para o primeiro jogador restante
+      if (wasAdmin && this.gameState.players.length > 0) {
+        this.gameState.players[0].isAdmin = true;
+      }
+      
       this.updateDisplay();
     });
 
     this.socket.on('room-players', (data: { players: Array<{ id: string; name: string }> }) => {
       if (data.players && Array.isArray(data.players)) {
+        // Limpar jogadores existentes (exceto o atual) para evitar duplicatas
+        const currentPlayerId = this.socket?.id || '1';
+        this.gameState.players = this.gameState.players.filter((p) => p.id === currentPlayerId);
+        
+        // Adicionar jogadores da sala
         data.players.forEach((roomPlayer) => {
           this.addPlayer(roomPlayer.id, roomPlayer.name);
         });
+        
         // Garantir que este jogador está na lista
-        this.addPlayer(this.socket?.id || '1', this.playerName);
+        this.addPlayer(currentPlayerId, this.playerName);
+        
+        // Garantir que há um admin (primeiro jogador)
+        const hasAdmin = this.gameState.players.some((p) => p.isAdmin);
+        if (!hasAdmin && this.gameState.players.length > 0) {
+          this.gameState.players[0].isAdmin = true;
+        }
+        
         this.updateDisplay();
       }
     });
