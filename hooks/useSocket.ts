@@ -8,7 +8,7 @@ export function useSocket() {
   const [connected, setConnected] = useState(false);
   const [roomId, setRoomId] = useState<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
-  const { playerName } = usePlayerName();
+  const { playerName, playerPhoto } = usePlayerName();
   const [isClient, setIsClient] = useState(false);
 
   useEffect(() => {
@@ -62,9 +62,12 @@ export function useSocket() {
         console.log('✅ Conectado ao servidor Socket.io');
         console.log('Socket ID:', socketInstance.id);
         setConnected(true);
-        // Atualizar nome quando conectar
+        // Atualizar nome e foto quando conectar
         if (playerName) {
           socketInstance.emit('update-player-name', playerName);
+        }
+        if (playerPhoto) {
+          socketInstance.emit('update-player-photo', playerPhoto);
         }
       });
 
@@ -129,19 +132,23 @@ export function useSocket() {
     };
   }, [playerName, isClient]);
 
-  // Atualizar nome quando mudar
+  // Atualizar nome e foto quando mudarem
   useEffect(() => {
     if (!playerName) return;
     
     if (socketRef.current && connected) {
       console.log('Atualizando nome no Socket.io:', playerName);
       socketRef.current.emit('update-player-name', playerName);
+      if (playerPhoto) {
+        socketRef.current.emit('update-player-photo', playerPhoto);
+      }
       
-      // Se estiver em uma sala, notificar a mudança de nome
+      // Se estiver em uma sala, notificar a mudança de nome e foto
       if (roomId) {
         socketRef.current.emit('player-name-changed', {
           roomId: roomId,
           newName: playerName,
+          newPhoto: playerPhoto,
         });
       }
     } else if (socketRef.current && !connected) {
@@ -150,10 +157,14 @@ export function useSocket() {
         if (socketRef.current?.connected) {
           console.log('Socket conectado, atualizando nome:', playerName);
           socketRef.current.emit('update-player-name', playerName);
+          if (playerPhoto) {
+            socketRef.current.emit('update-player-photo', playerPhoto);
+          }
           if (roomId) {
             socketRef.current.emit('player-name-changed', {
               roomId: roomId,
               newName: playerName,
+              newPhoto: playerPhoto,
             });
           }
           clearInterval(checkConnection);
@@ -163,7 +174,7 @@ export function useSocket() {
       // Limpar após 10 segundos
       setTimeout(() => clearInterval(checkConnection), 10000);
     }
-  }, [playerName, connected, roomId]);
+  }, [playerName, playerPhoto, connected, roomId]);
 
   const joinRoom = (room: string) => {
     if (!room || room.trim() === '') {

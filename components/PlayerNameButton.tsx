@@ -6,7 +6,7 @@ import { PlayerNameModal } from './PlayerNameModal';
 
 export function PlayerNameButton() {
   const router = useRouter();
-  const { playerName, mounted } = usePlayerName();
+  const { playerName, playerPhoto, mounted } = usePlayerName();
   const { socket, connected, roomId } = useSocket();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isClient, setIsClient] = useState(false);
@@ -40,7 +40,20 @@ export function PlayerNameButton() {
         title={isInGame ? 'Não é possível alterar o nome durante o jogo' : `Nome atual: ${playerName}`}
         style={isInGame ? { opacity: 0.6, cursor: 'not-allowed' } : {}}
       >
-        <span>👤</span>
+        {playerPhoto ? (
+          <img
+            src={playerPhoto}
+            alt={playerName}
+            style={{
+              width: '24px',
+              height: '24px',
+              borderRadius: '50%',
+              objectFit: 'cover',
+            }}
+          />
+        ) : (
+          <span>👤</span>
+        )}
         <span className="player-name-text">{playerName}</span>
         {isInGame && <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', opacity: 0.7 }}>🔒</span>}
       </button>

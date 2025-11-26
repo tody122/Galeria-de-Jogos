@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
+import { usePlayerName } from '@/hooks/usePlayerName';
 
 interface Player {
   id: string;
   name: string;
+  photo?: string;
 }
 
 interface RoomControlsProps {
@@ -23,17 +25,18 @@ export function RoomControls({
   onJoinRoom,
   onLeaveRoom,
 }: RoomControlsProps) {
+  const { playerPhoto } = usePlayerName();
   const [inputRoomId, setInputRoomId] = useState('');
   const [players, setPlayers] = useState<Player[]>([]);
 
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('player-joined', (data: { playerId: string; playerName: string }) => {
+    socket.on('player-joined', (data: { playerId: string; playerName: string; playerPhoto?: string }) => {
       setPlayers((prev) => {
         // Evitar duplicatas
         if (prev.find((p) => p.id === data.playerId)) return prev;
-        return [...prev, { id: data.playerId, name: data.playerName }];
+        return [...prev, { id: data.playerId, name: data.playerName, photo: data.playerPhoto }];
       });
     });
 
@@ -45,9 +48,9 @@ export function RoomControls({
       setPlayers(data.players.filter((p) => p.id !== socket.id));
     });
 
-    socket.on('player-name-updated', (data: { playerId: string; oldName: string; newName: string }) => {
+    socket.on('player-name-updated', (data: { playerId: string; oldName: string; newName: string; newPhoto?: string }) => {
       setPlayers((prev) =>
-        prev.map((p) => (p.id === data.playerId ? { ...p, name: data.newName } : p))
+        prev.map((p) => (p.id === data.playerId ? { ...p, name: data.newName, photo: data.newPhoto } : p))
       );
     });
 
@@ -138,9 +141,41 @@ export function RoomControls({
                 <strong>Sala:</strong> {roomId} | <strong>Jogadores:</strong> {players.length + 1}
               </div>
               <div className="players-list">
-                <span className="player-tag you">{playerName} (você)</span>
+                <span className="player-tag you">
+                  {playerPhoto ? (
+                    <img
+                      src={playerPhoto}
+                      alt={playerName}
+                      style={{
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '50%',
+                        objectFit: 'cover',
+                        flexShrink: 0,
+                      }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: '1.2rem', flexShrink: 0 }}>👤</span>
+                  )}
+                  {playerName} (você)
+                </span>
                 {players.map((player) => (
                   <span key={player.id} className="player-tag">
+                    {player.photo ? (
+                      <img
+                        src={player.photo}
+                        alt={player.name}
+                        style={{
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '50%',
+                          objectFit: 'cover',
+                          flexShrink: 0,
+                        }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: '1.2rem', flexShrink: 0 }}>👤</span>
+                    )}
                     {player.name}
                   </span>
                 ))}

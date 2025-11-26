@@ -10,6 +10,7 @@ interface GameConfig {
 interface Player {
   id: string;
   name: string;
+  photo?: string;
   team: 'team1' | 'team2' | 'spectator' | null;
   isAdmin?: boolean;
 }
@@ -18,6 +19,16 @@ interface Question {
   question: string;
   words: string[]; // 10 palavras
   answer: string;
+}
+
+interface Guess {
+  playerId: string;
+  playerName: string;
+  guess: string;
+  timestamp: number;
+  isCorrect?: boolean;
+  points?: number;
+  order?: number; // Ordem de acerto (1 = primeiro, 2 = segundo, etc)
 }
 
 interface RoundState {
@@ -31,9 +42,16 @@ interface RoundState {
   roundEnded: boolean;
   revealedWordsCount?: number; // Para modo todos contra todos - quantas palavras foram reveladas
   nextRevealPlayerId?: string | null; // Próximo jogador que pode revelar uma palavra
+  // Campos específicos para modo Caos
+  chaosGuesses?: Guess[]; // Array de palpites no modo Caos
+  autoRevealTimer?: number | null; // ID do timer de revelação automática
+  lastRevealTime?: number; // Timestamp da última revelação automática
+  revealedWordsIndices?: number[]; // Índices das palavras já reveladas automaticamente
+  correctGuesses?: Guess[]; // Palpites corretos em ordem de acerto
+  nextRevealIndex?: number; // Próximo índice de palavra a ser revelado
 }
 
-type GameMode = 'classic' | 'freeForAll';
+type GameMode = 'classic' | 'freeForAll' | 'chaos';
 
 interface GameModeConfig {
   name: string;
@@ -56,6 +74,9 @@ interface GameState {
   playerScores: Map<string, number>; // Pontuação individual para modo todos contra todos
   roundState: RoundState;
   currentRound: number;
+  scoreLimit?: number; // Pontuação limite para modo Caos
+  gameEnded?: boolean; // Indica se o jogo terminou (por pontuação limite)
+  winner?: { id: string; name: string; score: number }; // Vencedor do jogo
 }
 
 import { questions } from './questions';
@@ -75,6 +96,13 @@ const GAME_MODES: Record<GameMode, GameModeConfig> = {
     pointMultiplier: 1,
     hasTimer: false,
   },
+  chaos: {
+    name: 'Caos',
+    description: 'Modo caótico! Todos adivinham simultaneamente no chat. Palavras são reveladas automaticamente a cada 5 segundos. Quem acertar primeiro ganha mais pontos!',
+    maxWords: 10,
+    pointMultiplier: 1.5,
+    hasTimer: false,
+  },
 };
 
 
@@ -88,6 +116,7 @@ export default class ContextoGame {
   private readonly STORAGE_KEY = 'contexto-game-state';
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private chaosAutoRevealInterval: number | null = null; // Timer para revelação automática no modo Caos
 
   constructor(config: GameConfig) {
     this.container = config.container;
@@ -162,6 +191,13 @@ export default class ContextoGame {
 
   private getGameHTML(): string {
     console.log('getGameHTML - isGameActive:', this.gameState.isGameActive);
+    console.log('getGameHTML - gameEnded:', this.gameState.gameEnded);
+    
+    // Se o jogo terminou (por pontuação limite), mostrar tela de fim de jogo
+    if (this.gameState.gameEnded && this.gameState.gameMode === 'chaos') {
+      return this.getGameEndHTML();
+    }
+    
     if (!this.gameState.isGameActive) {
       console.log('Retornando lobby HTML');
       return this.getLobbyHTML();
@@ -176,8 +212,8 @@ export default class ContextoGame {
     if (!modeConfig) return '';
     
     // Ícone e classe específica por modo
-    const modeIcon = this.gameState.gameMode === 'classic' ? '⚔️' : '🎯';
-    const modeClass = this.gameState.gameMode === 'classic' ? 'mode-classic' : 'mode-free-for-all';
+    const modeIcon = this.gameState.gameMode === 'classic' ? '⚔️' : this.gameState.gameMode === 'freeForAll' ? '🎯' : '💥';
+    const modeClass = this.gameState.gameMode === 'classic' ? 'mode-classic' : this.gameState.gameMode === 'freeForAll' ? 'mode-free-for-all' : 'mode-chaos';
     
     return `
       <div class="game-mode-badge ${modeClass}">
@@ -192,10 +228,10 @@ export default class ContextoGame {
       <div class="contexto-container">
         <div class="contexto-header">
           <h2>🎯 Contexto ${this.getGameModeBadgeHTML()}</h2>
-          <p class="game-subtitle">${this.gameState.gameMode === 'freeForAll' ? 'Aguarde o administrador iniciar o jogo!' : 'Escolha seu time e comece a jogar!'}</p>
+          <p class="game-subtitle">${this.gameState.gameMode === 'freeForAll' || this.gameState.gameMode === 'chaos' ? 'Aguarde o administrador iniciar o jogo!' : 'Escolha seu time e comece a jogar!'}</p>
         </div>
 
-        ${this.gameState.gameMode !== 'freeForAll' ? `
+        ${this.gameState.gameMode !== 'freeForAll' && this.gameState.gameMode !== 'chaos' ? `
         <div class="contexto-teams-section">
           <div class="team-panel team1-panel">
             <h3>Azul 🔵</h3>
@@ -291,6 +327,10 @@ export default class ContextoGame {
       const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
       canStart = availablePlayers.length >= 2;
       startHint = `Modo Todos Contra Todos: precisa de pelo menos 2 jogadores (${availablePlayers.length} disponíveis). Times não são necessários!`;
+    } else if (selectedMode === 'chaos') {
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      canStart = availablePlayers.length >= 2;
+      startHint = `Modo Caos: precisa de pelo menos 2 jogadores (${availablePlayers.length} disponíveis). Todos podem revelar e adivinhar simultaneamente!`;
     }
 
     return `
@@ -321,6 +361,28 @@ export default class ContextoGame {
           <p class="randomize-hint">Distribui todos os jogadores aleatoriamente entre os times</p>
         </div>
         ` : ''}
+        ${selectedMode === 'chaos' ? `
+        <div class="admin-controls">
+          <div class="score-limit-control">
+            <label for="score-limit-slider">🎯 Pontuação Limite: <span id="score-limit-value">${this.gameState.scoreLimit || 50}</span></label>
+            <div class="slider-container">
+              <input 
+                type="range" 
+                id="score-limit-slider" 
+                class="score-limit-slider" 
+                min="1" 
+                max="300" 
+                value="${this.gameState.scoreLimit || 50}"
+              />
+              <div class="slider-labels">
+                <span>1</span>
+                <span>300</span>
+              </div>
+            </div>
+            <p class="score-limit-hint">O jogo termina quando um jogador atingir esta pontuação</p>
+          </div>
+        </div>
+        ` : ''}
         <button class="start-game-btn" id="start-game-btn" ${canStart ? '' : 'disabled'}>
           Iniciar Jogo
         </button>
@@ -330,6 +392,12 @@ export default class ContextoGame {
   }
 
   private getGameplayHTML(): string {
+    // Modo Caos tem lógica diferente
+    if (this.gameState.gameMode === 'chaos') {
+      console.log('Retornando getChaosHTML');
+      return this.getChaosHTML();
+    }
+    
     // Modo todos contra todos tem lógica diferente
     if (this.gameState.gameMode === 'freeForAll') {
       return this.getFreeForAllHTML();
@@ -501,19 +569,278 @@ export default class ContextoGame {
     return this.getGameplayWrapper(content);
   }
 
+  private getChaosHTML(): string {
+    const { question, visibleWords, chaosGuesses = [], lastRevealTime = Date.now(), revealedWordsIndices = [] } = this.gameState.roundState;
+    if (!question) return '';
+
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isSpectator = currentPlayer?.team === 'spectator';
+    
+    const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
+    
+    // Calcular tempo até próxima revelação (5 segundos)
+    const timeSinceLastReveal = Date.now() - lastRevealTime;
+    const timeUntilNextReveal = Math.max(0, 5000 - timeSinceLastReveal);
+    const secondsUntilNext = Math.ceil(timeUntilNextReveal / 1000);
+
+    if (this.gameState.roundState.roundEnded) {
+      return this.getChaosRoundEndHTML();
+    }
+
+    const content = `
+      <div class="contexto-container">
+        <div class="contexto-header">
+          <h2>💥 Caos${this.getGameModeBadgeHTML()}</h2>
+          <p class="game-subtitle">Adivinhe primeiro! Uma palavra será revelada a cada 5 segundos.</p>
+        </div>
+
+        <div class="chaos-game">
+          <div class="chaos-main-section">
+            <div class="formatted-question">
+              <h3>Frase Atual:</h3>
+              <div class="question-display">
+                <p class="formatted-question-text">${formattedQuestion}</p>
+              </div>
+            </div>
+
+            <div class="chaos-timer-section">
+              <div class="auto-reveal-timer">
+                <p class="timer-label">⏱️ Próxima palavra em:</p>
+                <p class="timer-value" id="chaos-timer">${secondsUntilNext}s</p>
+              </div>
+              <p class="revealed-count">Palavras reveladas: ${revealedWordsIndices.length} / ${question.words.length}</p>
+            </div>
+          </div>
+
+          <div class="chaos-chat-section">
+            <h3>💬 Chat de Palpites</h3>
+            <div class="chaos-chat-messages" id="chaos-chat-messages">
+              ${chaosGuesses.map(guess => {
+                const guessPlayer = this.gameState.players.find(p => p.id === guess.playerId);
+                const photoHTML = guessPlayer?.photo 
+                  ? `<img src="${guessPlayer.photo}" alt="${guess.playerName}" style="width: 24px; height: 24px; border-radius: 50%; object-fit: cover; margin-right: 0.5rem;" />`
+                  : '<span style="margin-right: 0.5rem;">👤</span>';
+                // Se acertou, não mostrar o palpite, apenas indicar que acertou
+                const guessDisplay = guess.isCorrect ? '<span class="chat-guess-correct">✅ Acertou!</span>' : `<span class="chat-guess">${guess.guess}</span>`;
+                const correctBadge = guess.isCorrect ? `<span class="correct-badge">${guess.points}pts (${guess.order}º)</span>` : '';
+                return `
+                  <div class="chat-message ${guess.isCorrect ? 'correct' : ''}">
+                    ${photoHTML}
+                    <span class="chat-player-name">${guess.playerName}:</span>
+                    ${guessDisplay}
+                    ${correctBadge}
+                  </div>
+                `;
+              }).join('')}
+              ${chaosGuesses.length === 0 ? '<p class="no-guesses">Nenhum palpite ainda. Seja o primeiro a adivinhar!</p>' : ''}
+            </div>
+            ${!isSpectator ? `
+              <div class="chaos-chat-input">
+                <input 
+                  type="text" 
+                  id="chaos-guess-input" 
+                  class="chaos-guess-input" 
+                  placeholder="Digite seu palpite..."
+                  ${this.gameState.roundState.roundEnded ? 'disabled' : ''}
+                />
+                <button 
+                  class="submit-chaos-guess-btn" 
+                  id="submit-chaos-guess-btn"
+                  ${this.gameState.roundState.roundEnded ? 'disabled' : ''}
+                >
+                  Enviar
+                </button>
+              </div>
+            ` : `
+              <div class="spectator-note">
+                <p>👁️ Você é telespectador e não pode participar</p>
+              </div>
+            `}
+          </div>
+        </div>
+      </div>
+    `;
+    
+    return this.getGameplayWrapper(content);
+  }
+
+  private getChaosRoundEndHTML(): string {
+    const { question, correctGuesses = [] } = this.gameState.roundState;
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const playerScore = this.gameState.playerScores.get(currentPlayer?.id || '') || 0;
+    
+    // Verificar se o jogador atual acertou
+    const playerCorrectGuess = correctGuesses.find(g => g.playerId === currentPlayer?.id);
+    const isCorrect = !!playerCorrectGuess;
+
+    const content = `
+      <div class="contexto-container">
+        <div class="contexto-header">
+          <h2>💥 Resultado da Rodada ${this.getGameModeBadgeHTML()}</h2>
+        </div>
+
+        <div class="round-result">
+          <div class="result-info">
+            <p class="guess-result ${isCorrect ? 'correct' : 'incorrect'}">
+              ${isCorrect ? `✅ Você acertou em ${playerCorrectGuess?.order}º lugar!` : '❌ Você não acertou nesta rodada'}
+            </p>
+            ${isCorrect ? `<p class="points-earned">+${playerCorrectGuess?.points} pontos!</p>` : '<p class="points-lost">0 pontos</p>'}
+            <p class="your-score">Sua pontuação total: <strong>${playerScore}</strong> pontos</p>
+          </div>
+
+          <div class="chaos-winners-list">
+            <h3>🏆 Ranking de Acertos:</h3>
+            <div class="winners-ranking">
+              ${correctGuesses.length > 0 
+                ? correctGuesses
+                    .sort((a, b) => (a.order || 0) - (b.order || 0))
+                    .map(guess => {
+                      const guessPlayer = this.gameState.players.find(p => p.id === guess.playerId);
+                      const photoHTML = guessPlayer?.photo 
+                        ? `<img src="${guessPlayer.photo}" alt="${guess.playerName}" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover; margin-right: 0.5rem;" />`
+                        : '<span style="margin-right: 0.5rem;">👤</span>';
+                      return `
+                        <div class="winner-item ${guess.playerId === currentPlayer?.id ? 'you' : ''}">
+                          ${photoHTML}
+                          <span class="winner-position">${guess.order}º</span>
+                          <span class="winner-name">${guess.playerName}</span>
+                          <span class="winner-points">+${guess.points}pts</span>
+                        </div>
+                      `;
+                    }).join('')
+                : '<p class="no-winners">Ninguém acertou nesta rodada</p>'
+              }
+            </div>
+          </div>
+
+          <button class="next-round-btn" id="next-round-btn">
+            Próxima Rodada
+          </button>
+        </div>
+      </div>
+    `;
+    
+    return this.getGameplayWrapper(content);
+  }
+
+  private getGameEndHTML(): string {
+    const winner = this.gameState.winner;
+    if (!winner) return this.getLobbyHTML();
+    
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    const isWinner = currentPlayer?.id === winner.id;
+    
+    // Ordenar todos os jogadores por pontuação
+    const allPlayersScores = Array.from(this.gameState.playerScores.entries())
+      .map(([playerId, score]) => {
+        const player = this.gameState.players.find(p => p.id === playerId);
+        return {
+          id: playerId,
+          name: player?.name || 'Desconhecido',
+          photo: player?.photo,
+          score: score
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+    
+    const winnerPlayer = this.gameState.players.find(p => p.id === winner.id);
+    
+    const content = `
+      <div class="contexto-container game-end-container">
+        <div class="game-end-header">
+          <div class="celebration-icons">
+            <span class="celebration-icon">🎉</span>
+            <span class="celebration-icon">🏆</span>
+            <span class="celebration-icon">🎊</span>
+          </div>
+          <h2 class="game-end-title">Fim de Jogo! ${this.getGameModeBadgeHTML()}</h2>
+          <p class="game-end-subtitle">Pontuação limite atingida!</p>
+        </div>
+
+        <div class="game-end-result">
+          <div class="winner-announcement ${isWinner ? 'you-winner' : ''}">
+            <div class="winner-badge">
+              <span class="crown-icon">👑</span>
+              <span class="winner-label">${isWinner ? 'Você Venceu!' : 'Vencedor'}</span>
+            </div>
+            <div class="winner-card">
+              <div class="winner-avatar-wrapper">
+                ${winnerPlayer?.photo 
+                  ? `<img src="${winnerPlayer.photo}" alt="${winner.name}" class="winner-avatar" />`
+                  : '<div class="winner-avatar-placeholder">👤</div>'}
+                <div class="winner-glow"></div>
+              </div>
+              <h3 class="winner-name">${winner.name}</h3>
+              <div class="winner-score-display">
+                <span class="score-icon">⭐</span>
+                <span class="score-value">${winner.score}</span>
+                <span class="score-label">pontos</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="final-ranking">
+            <div class="ranking-header">
+              <span class="ranking-icon">📊</span>
+              <h3>Classificação Final</h3>
+            </div>
+            <div class="ranking-list">
+              ${allPlayersScores.length > 0
+                ? allPlayersScores.map((player, index) => {
+                    const photoHTML = player.photo 
+                      ? `<img src="${player.photo}" alt="${player.name}" class="ranking-avatar" />`
+                      : '<div class="ranking-avatar-placeholder">👤</div>';
+                    const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '';
+                    const isCurrentPlayer = player.id === currentPlayer?.id;
+                    return `
+                      <div class="ranking-item ${isCurrentPlayer ? 'you' : ''} ${index === 0 ? 'first' : ''} ${index === 1 ? 'second' : ''} ${index === 2 ? 'third' : ''}">
+                        <div class="ranking-position-wrapper">
+                          <span class="ranking-medal">${medal}</span>
+                          <span class="ranking-position">${index + 1}º</span>
+                        </div>
+                        <div class="ranking-player-info">
+                          ${photoHTML}
+                          <span class="ranking-name">${player.name}${isCurrentPlayer ? ' <span class="you-badge-small">(você)</span>' : ''}</span>
+                        </div>
+                        <span class="ranking-score">${player.score} pts</span>
+                      </div>
+                    `;
+                  }).join('')
+                : '<p class="no-scores">Nenhuma pontuação registrada</p>'
+              }
+            </div>
+          </div>
+
+          <button class="back-to-lobby-btn" id="back-to-lobby-btn">
+            <span>🏠</span>
+            <span>Voltar ao Lobby</span>
+          </button>
+        </div>
+      </div>
+    `;
+    
+    return this.getGameplayWrapper(content);
+  }
+
   private getPlayersListHTML(): string {
     return `
       <div class="game-sidebar players-sidebar">
         <h3>👥 Jogadores</h3>
         <div class="all-players-list">
           ${this.gameState.players.map(player => {
-            // No modo todos contra todos, não mostrar badges de times
-            const showTeamBadge = this.gameState.gameMode !== 'freeForAll';
+            // No modo todos contra todos e caos, não mostrar badges de times
+            const showTeamBadge = this.gameState.gameMode !== 'freeForAll' && this.gameState.gameMode !== 'chaos';
             const teamBadge = showTeamBadge ? (player.team === 'team1' ? '🔵' : player.team === 'team2' ? '🔴' : player.team === 'spectator' ? '👁️' : '') : (player.team === 'spectator' ? '👁️' : '');
             const teamName = showTeamBadge ? (player.team === 'team1' ? 'Azul' : player.team === 'team2' ? 'Vermelho' : player.team === 'spectator' ? 'Telespectador' : 'Sem time') : (player.team === 'spectator' ? 'Telespectador' : '');
+            const photoHTML = player.photo 
+              ? `<img src="${player.photo}" alt="${player.name}" style="width: 48px; height: 48px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" />`
+              : '<span style="font-size: 1.5rem; flex-shrink: 0;">👤</span>';
             return `
               <div class="player-list-item ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
-                <span class="player-name">${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}</span>
+                <span class="player-name">
+                  ${photoHTML}
+                  <span>${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}</span>
+                </span>
                 ${teamBadge && showTeamBadge ? `<span class="player-team-badge">${teamBadge} ${teamName}</span>` : (player.team === 'spectator' ? '<span class="player-team-badge">👁️ Telespectador</span>' : '')}
                 ${player.isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
               </div>
@@ -525,6 +852,42 @@ export default class ContextoGame {
   }
 
   private getScoreboardHTML(): string {
+    // No modo todos contra todos e caos, mostrar pontuação individual
+    if (this.gameState.gameMode === 'freeForAll' || this.gameState.gameMode === 'chaos') {
+      const sortedPlayers = [...this.gameState.players]
+        .filter(p => p.team !== 'spectator')
+        .sort((a, b) => {
+          const scoreA = this.gameState.playerScores.get(a.id) || 0;
+          const scoreB = this.gameState.playerScores.get(b.id) || 0;
+          return scoreB - scoreA;
+        });
+
+      return `
+        <div class="scoreboard-panel">
+          <h3>📊 Pontuação Individual</h3>
+          <div class="individual-scores">
+            ${sortedPlayers.map((player, index) => {
+              const score = this.gameState.playerScores.get(player.id) || 0;
+              const isYou = player.name === this.playerName;
+              const photoHTML = player.photo 
+                ? `<img src="${player.photo}" alt="${player.name}" style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" />`
+                : '<span style="font-size: 1.2rem; flex-shrink: 0;">👤</span>';
+              return `
+                <div class="score-item ${isYou ? 'you' : ''} ${index === 0 ? 'first-place' : ''}">
+                  <span class="player-name">
+                    ${photoHTML}
+                    <span>${player.name}${isYou ? ' (você)' : ''}</span>
+                  </span>
+                  <span class="score-value">${score} pts</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Modo clássico: mostrar pontuação por times
     return `
       <div class="scoreboard-panel">
         <div class="scoreboard-teams">
@@ -532,22 +895,34 @@ export default class ContextoGame {
             <h3>Azul 🔵</h3>
             <div class="score-value">${this.gameState.team1Score}</div>
             <div class="team-players-list">
-              ${this.gameState.team1.map(player => `
+              ${this.gameState.team1.map(player => {
+                const photoHTML = player.photo 
+                  ? `<img src="${player.photo}" alt="${player.name}" style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" />`
+                  : '<span style="font-size: 1.2rem; flex-shrink: 0;">👤</span>';
+                return `
                 <span class="scoreboard-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
-                  ${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}
+                  ${photoHTML}
+                  <span>${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}</span>
                 </span>
-              `).join('')}
+              `;
+              }).join('')}
             </div>
           </div>
           <div class="scoreboard-team team2-scoreboard">
             <h3>Vermelho 🔴</h3>
             <div class="score-value">${this.gameState.team2Score}</div>
             <div class="team-players-list">
-              ${this.gameState.team2.map(player => `
+              ${this.gameState.team2.map(player => {
+                const photoHTML = player.photo 
+                  ? `<img src="${player.photo}" alt="${player.name}" style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" />`
+                  : '<span style="font-size: 1.2rem; flex-shrink: 0;">👤</span>';
+                return `
                 <span class="scoreboard-player ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
-                  ${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}
+                  ${photoHTML}
+                  <span>${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}</span>
                 </span>
-              `).join('')}
+              `;
+              }).join('')}
             </div>
           </div>
         </div>
@@ -556,21 +931,34 @@ export default class ContextoGame {
   }
 
   private getScoreboardSidebarHTML(): string {
-    // No modo todos contra todos, mostrar pontuação individual
-    if (this.gameState.gameMode === 'freeForAll' && this.gameState.isGameActive) {
-      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+    // No modo todos contra todos e caos, mostrar pontuação individual
+    if ((this.gameState.gameMode === 'freeForAll' || this.gameState.gameMode === 'chaos') && this.gameState.isGameActive) {
+      const sortedPlayers = [...this.gameState.players]
+        .filter(p => p.team !== 'spectator')
+        .sort((a, b) => {
+          const scoreA = this.gameState.playerScores.get(a.id) || 0;
+          const scoreB = this.gameState.playerScores.get(b.id) || 0;
+          return scoreB - scoreA;
+        });
+      
       return `
         <div class="game-sidebar scoreboard-sidebar">
           <div class="scoreboard-panel">
             <h3>📊 Pontuação</h3>
             <div class="individual-scores">
-              ${availablePlayers.map(player => {
+              ${sortedPlayers.map((player, index) => {
                 const score = this.gameState.playerScores.get(player.id) || 0;
                 const isYou = player.name === this.playerName;
+                const photoHTML = player.photo 
+                  ? `<img src="${player.photo}" alt="${player.name}" style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0;" />`
+                  : '<span style="font-size: 1.2rem; flex-shrink: 0;">👤</span>';
                 return `
-                  <div class="score-item ${isYou ? 'you' : ''}">
-                    <span class="player-name">${player.name}${isYou ? ' (você)' : ''}</span>
-                    <span class="score-value">${score}</span>
+                  <div class="score-item ${isYou ? 'you' : ''} ${index === 0 ? 'first-place' : ''}">
+                    <span class="player-name">
+                      ${photoHTML}
+                      <span>${player.name}${isYou ? ' (você)' : ''}</span>
+                    </span>
+                    <span class="score-value">${score} pts</span>
                   </div>
                 `;
               }).join('')}
@@ -948,8 +1336,8 @@ export default class ContextoGame {
     const joinSpectatorBtn = this.gameElement.querySelector('#join-spectator-btn');
     const startGameBtn = this.gameElement.querySelector('#start-game-btn');
 
-    // Só adicionar listeners de times se não estiver no modo todos contra todos
-    if (this.gameState.gameMode !== 'freeForAll') {
+    // Só adicionar listeners de times se não estiver no modo todos contra todos ou caos
+    if (this.gameState.gameMode !== 'freeForAll' && this.gameState.gameMode !== 'chaos') {
       joinTeam1Btn?.addEventListener('click', () => {
         this.joinTeam('team1');
       });
@@ -968,6 +1356,39 @@ export default class ContextoGame {
     randomizeTeamsBtn?.addEventListener('click', () => {
       this.randomizeTeams();
     });
+
+    // Listener para pontuação limite (modo Caos) - slider
+    const scoreLimitSlider = this.gameElement.querySelector('#score-limit-slider') as HTMLInputElement;
+    const scoreLimitValue = this.gameElement.querySelector('#score-limit-value');
+    if (scoreLimitSlider) {
+      // Atualizar valor exibido enquanto arrasta
+      scoreLimitSlider.addEventListener('input', () => {
+        const value = parseInt(scoreLimitSlider.value, 10);
+        if (scoreLimitValue) {
+          scoreLimitValue.textContent = value.toString();
+        }
+      });
+      
+      // Salvar valor quando soltar o slider
+      scoreLimitSlider.addEventListener('change', () => {
+        const value = parseInt(scoreLimitSlider.value, 10);
+        if (!isNaN(value) && value > 0 && value <= 300) {
+          this.gameState.scoreLimit = value;
+          this.saveGameState();
+          
+          // Enviar para outros jogadores
+          if (this.socket && this.roomId) {
+            this.socket.emit('game-broadcast', {
+              roomId: this.roomId,
+              event: 'score-limit-changed',
+              payload: {
+                scoreLimit: value,
+              },
+            });
+          }
+        }
+      });
+    }
 
     // Listener para seleção de modo
     const gameModesGrid = this.gameElement.querySelector('#game-modes-grid');
@@ -988,6 +1409,16 @@ export default class ContextoGame {
       e.preventDefault();
       console.log('Botão iniciar jogo clicado');
       this.startGame();
+    });
+
+    // Botão de voltar ao lobby (fim de jogo)
+    const backToLobbyBtn = this.gameElement.querySelector('#back-to-lobby-btn');
+    backToLobbyBtn?.addEventListener('click', () => {
+      this.gameState.isGameActive = false;
+      this.gameState.gameEnded = false;
+      this.gameState.winner = undefined;
+      this.saveGameState();
+      this.updateDisplay();
     });
 
     // Event listeners dinâmicos para o jogo
@@ -1029,7 +1460,7 @@ export default class ContextoGame {
       this.submitWords();
     });
 
-    // Listener para enviar resposta
+    // Listener para enviar resposta (modo clássico e todos contra todos)
     const submitGuessBtn = this.gameElement.querySelector('#submit-guess-btn');
     const guessInput = this.gameElement.querySelector('#guess-input') as HTMLInputElement;
     
@@ -1042,6 +1473,9 @@ export default class ContextoGame {
         this.submitGuess();
       }
     });
+
+    // Listener para chat do modo Caos (será reconfigurado em setupChaosListeners após updateDisplay)
+    // Não configurar aqui porque o HTML será recriado em updateDisplay
 
     // Listener para próxima rodada
     const nextRoundBtn = this.gameElement.querySelector('#next-round-btn');
@@ -1197,12 +1631,415 @@ export default class ContextoGame {
     this.updateDisplay();
   }
 
+  private submitChaosGuess() {
+    console.log('📝 submitChaosGuess chamado');
+    const guessInput = this.gameElement?.querySelector('#chaos-guess-input') as HTMLInputElement;
+    if (!guessInput) {
+      console.log('⚠️ Input de palpite não encontrado');
+      return;
+    }
+
+    const guess = guessInput.value.trim();
+    if (!guess) {
+      console.log('⚠️ Palpite vazio');
+      return;
+    }
+    
+    console.log('💬 Processando palpite:', guess);
+
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    if (!currentPlayer) return;
+
+    // Verificar se já acertou
+    const alreadyCorrect = this.gameState.roundState.correctGuesses?.some(
+      g => g.playerId === currentPlayer.id && g.isCorrect
+    );
+    if (alreadyCorrect) {
+      alert('Você já acertou! Aguarde a próxima rodada.');
+      return;
+    }
+
+    // Adicionar palpite ao chat
+    const newGuess: Guess = {
+      playerId: currentPlayer.id,
+      playerName: this.playerName,
+      guess: guess,
+      timestamp: Date.now(),
+    };
+
+    if (!this.gameState.roundState.chaosGuesses) {
+      this.gameState.roundState.chaosGuesses = [];
+    }
+    this.gameState.roundState.chaosGuesses.push(newGuess);
+
+    // Verificar se está correto
+    const { question } = this.gameState.roundState;
+    const normalizedGuess = this.normalizeWord(guess.trim());
+    const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
+    const isCorrect = normalizedGuess === normalizedAnswer;
+
+    if (isCorrect) {
+      // Processar acerto (isso atualiza newGuess com order, points, isCorrect)
+      this.processChaosCorrectGuess(newGuess);
+    }
+
+    // Limpar input
+    guessInput.value = '';
+
+    // Enviar para outros jogadores (após processamento, se correto)
+    if (this.socket && this.roomId) {
+      // Se foi correto, buscar o palpite atualizado com order e points
+      const guessToSend = isCorrect 
+        ? (this.gameState.roundState.chaosGuesses?.find(g => g.playerId === newGuess.playerId && g.timestamp === newGuess.timestamp) || newGuess)
+        : newGuess;
+      
+      console.log('📤 Enviando palpite via socket:', {
+        guess: guessToSend.guess,
+        isCorrect: isCorrect,
+        hasOrder: !!guessToSend.order,
+        hasPoints: !!guessToSend.points
+      });
+      
+      this.socket.emit('game-broadcast', {
+        roomId: this.roomId,
+        event: 'chaos-guess',
+        payload: {
+          guess: guessToSend,
+          isCorrect: isCorrect,
+        },
+      });
+    } else {
+      console.log('⚠️ Socket ou roomId não disponível');
+    }
+
+    this.saveGameState();
+    this.updateDisplay();
+    
+    // Fazer scroll do chat para a última mensagem
+    setTimeout(() => {
+      const chatMessages = this.gameElement?.querySelector('#chaos-chat-messages');
+      if (chatMessages) {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+    }, 100);
+  }
+
+  private processChaosCorrectGuess(guess: Guess) {
+    console.log('🎯 Processando acerto no modo Caos:', guess);
+    
+    if (!this.gameState.roundState.correctGuesses) {
+      this.gameState.roundState.correctGuesses = [];
+    }
+
+    // Verificar se já acertou
+    const alreadyInList = this.gameState.roundState.correctGuesses.some(
+      g => g.playerId === guess.playerId
+    );
+    if (alreadyInList) {
+      console.log('⚠️ Jogador já está na lista de acertos');
+      return; // Já está na lista
+    }
+
+    // Adicionar à lista de acertos
+    const order = this.gameState.roundState.correctGuesses.length + 1;
+    const points = 11 - order; // 10 pontos para 1º, 9 para 2º, etc.
+    
+    console.log('🏆 Novo acerto!', {
+      player: guess.playerName,
+      order: order,
+      points: points
+    });
+    
+    guess.isCorrect = true;
+    guess.order = order;
+    guess.points = points;
+
+    this.gameState.roundState.correctGuesses.push(guess);
+
+    // Atualizar pontuação do jogador
+    const currentScore = this.gameState.playerScores.get(guess.playerId) || 0;
+    const newScore = currentScore + points;
+    this.gameState.playerScores.set(guess.playerId, newScore);
+    
+    console.log('📊 Pontuação atualizada:', {
+      player: guess.playerName,
+      oldScore: currentScore,
+      pointsEarned: points,
+      newScore: newScore
+    });
+
+    // Atualizar o palpite no array de palpites
+    const guessIndex = this.gameState.roundState.chaosGuesses?.findIndex(
+      g => g.playerId === guess.playerId && g.timestamp === guess.timestamp
+    );
+    if (guessIndex !== undefined && guessIndex !== -1 && this.gameState.roundState.chaosGuesses) {
+      this.gameState.roundState.chaosGuesses[guessIndex] = guess;
+      console.log('✅ Palpite atualizado no array de palpites');
+    }
+
+    // Verificar se algum jogador atingiu a pontuação limite
+    if (this.gameState.scoreLimit && newScore >= this.gameState.scoreLimit) {
+      console.log('🏆 Pontuação limite atingida!', {
+        playerId: guess.playerId,
+        playerName: guess.playerName,
+        score: newScore,
+        limit: this.gameState.scoreLimit
+      });
+      // Terminar o jogo (mas manter isGameActive para mostrar tela de fim de jogo)
+      this.gameState.gameEnded = true;
+      this.gameState.winner = {
+        id: guess.playerId,
+        name: guess.playerName,
+        score: newScore
+      };
+      this.saveGameState();
+      this.updateDisplay();
+      
+      // Enviar para outros jogadores
+      if (this.socket && this.roomId) {
+        this.socket.emit('game-broadcast', {
+          roomId: this.roomId,
+          event: 'game-ended',
+          payload: {
+            winnerId: guess.playerId,
+            winnerName: guess.playerName,
+            winnerScore: newScore,
+            reason: 'score-limit',
+          },
+        });
+      }
+      return;
+    }
+
+    // Verificar se a rodada deve terminar
+    this.checkChaosRoundEnd();
+  }
+  
+  private checkChaosRoundEnd() {
+    const { question, correctGuesses = [], revealedWordsIndices = [] } = this.gameState.roundState;
+    if (!question) return;
+    
+    // Contar jogadores que podem jogar (não telespectadores)
+    const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+    const totalPlayers = availablePlayers.length;
+    const playersWhoGuessed = correctGuesses.length;
+    
+    // Verificar se todas as palavras foram reveladas
+    const allWordsRevealed = revealedWordsIndices.length >= question.words.length;
+    
+    // Verificar se todos os jogadores acertaram
+    const allPlayersGuessed = playersWhoGuessed >= totalPlayers;
+    
+    // A rodada termina se: todos acertaram OU todas as palavras foram reveladas
+    if (allPlayersGuessed || allWordsRevealed) {
+      console.log('🏁 Terminando rodada:', {
+        allPlayersGuessed,
+        allWordsRevealed,
+        playersWhoGuessed,
+        totalPlayers,
+        wordsRevealed: revealedWordsIndices.length,
+        totalWords: question.words.length
+      });
+      
+      setTimeout(() => {
+        this.gameState.roundState.roundEnded = true;
+        this.stopChaosAutoReveal();
+        this.updateDisplay();
+      }, 2000);
+    }
+  }
+
+  private startChaosAutoReveal() {
+    // Limpar timer anterior se existir
+    this.stopChaosAutoReveal();
+
+    console.log('🔄 Iniciando timer de revelação automática do modo Caos');
+    
+    // Garantir que lastRevealTime está definido
+    if (!this.gameState.roundState.lastRevealTime) {
+      this.gameState.roundState.lastRevealTime = Date.now();
+    }
+
+    // NÃO revelar primeira palavra imediatamente - começar com timer de 5 segundos
+    // Configurar timer para revelar a cada 5 segundos
+    this.chaosAutoRevealInterval = window.setInterval(() => {
+      console.log('⏰ Timer do Caos executado', {
+        gameMode: this.gameState.gameMode,
+        isGameActive: this.gameState.isGameActive,
+        roundEnded: this.gameState.roundState.roundEnded
+      });
+      
+      if (this.gameState.gameMode === 'chaos' && this.gameState.isGameActive && !this.gameState.roundState.roundEnded) {
+        this.revealChaosWord();
+      } else {
+        console.log('🛑 Parando timer do Caos');
+        this.stopChaosAutoReveal();
+      }
+    }, 5000) as unknown as number;
+    
+    // Atualizar o timer na tela
+    setTimeout(() => {
+      this.updateChaosTimer();
+    }, 100);
+  }
+
+  private stopChaosAutoReveal() {
+    if (this.chaosAutoRevealInterval !== null) {
+      clearInterval(this.chaosAutoRevealInterval);
+      this.chaosAutoRevealInterval = null;
+    }
+  }
+
+  private revealChaosWord() {
+    console.log('🔓 revealChaosWord chamado');
+    const { question, visibleWords, revealedWordsIndices = [] } = this.gameState.roundState;
+    if (!question) {
+      console.log('⚠️ Nenhuma pergunta disponível');
+      return;
+    }
+    
+    console.log('📊 Estado atual:', {
+      revealedCount: revealedWordsIndices.length,
+      totalWords: question.words.length,
+      visibleWords: visibleWords.filter(v => v).length
+    });
+
+    // Verificar se todas as palavras já foram reveladas
+    if (revealedWordsIndices.length >= question.words.length) {
+      this.stopChaosAutoReveal();
+      return;
+    }
+
+    // Encontrar índices de palavras ainda não reveladas
+    const availableIndices: number[] = [];
+    for (let i = 0; i < question.words.length; i++) {
+      if (!visibleWords[i] && !revealedWordsIndices.includes(i)) {
+        availableIndices.push(i);
+      }
+    }
+
+    if (availableIndices.length === 0) {
+      this.stopChaosAutoReveal();
+      return;
+    }
+
+    // Escolher índice aleatório
+    const randomIndex = availableIndices[Math.floor(Math.random() * availableIndices.length)];
+    
+    console.log('🎲 Revelando palavra no índice:', randomIndex, 'Palavra:', question.words[randomIndex]);
+
+    // Revelar a palavra
+    this.gameState.roundState.visibleWords[randomIndex] = true;
+    if (!this.gameState.roundState.revealedWordsIndices) {
+      this.gameState.roundState.revealedWordsIndices = [];
+    }
+    this.gameState.roundState.revealedWordsIndices.push(randomIndex);
+    this.gameState.roundState.revealedWordsCount = this.gameState.roundState.revealedWordsIndices.length;
+    this.gameState.roundState.lastRevealTime = Date.now();
+    
+    console.log('✅ Palavra revelada. Total reveladas:', this.gameState.roundState.revealedWordsIndices.length);
+
+    // Enviar para outros jogadores
+    if (this.socket && this.roomId) {
+      this.socket.emit('game-broadcast', {
+        roomId: this.roomId,
+        event: 'chaos-word-revealed',
+        payload: {
+          wordIndex: randomIndex,
+          visibleWords: this.gameState.roundState.visibleWords,
+          revealedWordsIndices: this.gameState.roundState.revealedWordsIndices,
+          lastRevealTime: this.gameState.roundState.lastRevealTime,
+        },
+      });
+    }
+
+    this.saveGameState();
+    this.updateDisplay();
+    
+    // Verificar se a rodada deve terminar após revelar palavra
+    this.checkChaosRoundEnd();
+  }
+
+  private updateChaosTimer() {
+    if (this.gameState.gameMode !== 'chaos' || !this.gameState.isGameActive || this.gameState.roundState.roundEnded) return;
+
+    const updateTimer = () => {
+      if (this.gameState.gameMode !== 'chaos' || !this.gameState.isGameActive || this.gameState.roundState.roundEnded) return;
+      
+      const timerElement = this.gameElement?.querySelector('#chaos-timer');
+      if (!timerElement) {
+        // Tentar novamente após um pequeno delay se o elemento ainda não existir
+        setTimeout(updateTimer, 100);
+        return;
+      }
+      
+      const { lastRevealTime = Date.now() } = this.gameState.roundState;
+      const timeSinceLastReveal = Date.now() - lastRevealTime;
+      const timeUntilNextReveal = Math.max(0, 5000 - timeSinceLastReveal);
+      const secondsUntilNext = Math.ceil(timeUntilNextReveal / 1000);
+
+      timerElement.textContent = `${secondsUntilNext}s`;
+
+      if (timeUntilNextReveal > 0 && !this.gameState.roundState.roundEnded) {
+        setTimeout(updateTimer, 100);
+      } else if (timeUntilNextReveal <= 0 && !this.gameState.roundState.roundEnded) {
+        // Resetar para 5 segundos quando uma palavra for revelada
+        setTimeout(updateTimer, 100);
+      }
+    };
+
+    updateTimer();
+  }
+
+  private setupChaosListeners() {
+    if (!this.gameElement) {
+      console.log('⚠️ gameElement não existe para setupChaosListeners');
+      return;
+    }
+    
+    // Listener para chat do modo Caos
+    const submitChaosGuessBtn = this.gameElement.querySelector('#submit-chaos-guess-btn');
+    const chaosGuessInput = this.gameElement.querySelector('#chaos-guess-input') as HTMLInputElement;
+    
+    console.log('🔧 Configurando listeners do Caos', {
+      hasButton: !!submitChaosGuessBtn,
+      hasInput: !!chaosGuessInput
+    });
+    
+    if (submitChaosGuessBtn) {
+      // Remover listener anterior se existir
+      const newBtn = submitChaosGuessBtn.cloneNode(true);
+      submitChaosGuessBtn.parentNode?.replaceChild(newBtn, submitChaosGuessBtn);
+      
+      newBtn.addEventListener('click', () => {
+        console.log('💬 Botão de palpite clicado');
+        this.submitChaosGuess();
+      });
+    } else {
+      console.log('⚠️ Botão submit-chaos-guess-btn não encontrado');
+    }
+    
+    if (chaosGuessInput) {
+      chaosGuessInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          console.log('💬 Enter pressionado no input de palpite');
+          this.submitChaosGuess();
+        }
+      });
+    } else {
+      console.log('⚠️ Input chaos-guess-input não encontrado');
+    }
+  }
+
   private revealWord(index: number) {
+    // No modo Caos, palavras são reveladas automaticamente
+    if (this.gameState.gameMode === 'chaos') return;
     if (this.gameState.gameMode !== 'freeForAll') return;
     
     const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
-    const canReveal = currentPlayer?.id === this.gameState.roundState.nextRevealPlayerId;
     
+    // No modo freeForAll, precisa ser a vez do jogador
+    const canReveal = currentPlayer?.id === this.gameState.roundState.nextRevealPlayerId;
     if (!canReveal) {
       alert('Não é sua vez de revelar uma palavra!');
       return;
@@ -1227,12 +2064,13 @@ export default class ContextoGame {
     if (this.socket && this.roomId) {
       this.socket.emit('game-broadcast', {
         roomId: this.roomId,
-        event: 'word-revealed',
+        event: eventName,
         payload: {
           wordIndex: index,
           visibleWords: this.gameState.roundState.visibleWords,
           revealedWordsCount: this.gameState.roundState.revealedWordsCount,
           nextRevealPlayerId: this.gameState.roundState.nextRevealPlayerId,
+          gameMode: this.gameState.gameMode,
         },
       });
     }
@@ -1271,6 +2109,34 @@ export default class ContextoGame {
         revealedWordsCount: 0,
         nextRevealPlayerId: firstPlayer?.id || null,
       };
+    } else if (this.gameState.gameMode === 'chaos') {
+      // Parar timer anterior
+      this.stopChaosAutoReveal();
+      
+      // Modo caos: nova rodada com todas as palavras ocultas
+      // Revelação automática a cada 5 segundos
+      this.gameState.roundState = {
+        currentTeam: null,
+        currentPlayerId: null,
+        question: adaptedQuestion,
+        visibleWords: Array.from({ length: modeConfig.maxWords }, () => false), // Todas ocultas
+        guess: '',
+        points: 0,
+        roundStarted: true,
+        roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: null,
+        // Reinicializar campos do modo Caos
+        chaosGuesses: [],
+        autoRevealTimer: null,
+        lastRevealTime: Date.now(),
+        revealedWordsIndices: [],
+        correctGuesses: [],
+        nextRevealIndex: 0,
+      };
+      
+      // Iniciar timer de revelação automática
+      this.startChaosAutoReveal();
     } else {
       // Modo clássico: alternar time
       const nextTeam = this.gameState.roundState.currentTeam === 'team1' ? 'team2' : 'team1';
@@ -1470,6 +2336,17 @@ export default class ContextoGame {
       availablePlayers.forEach(player => {
         this.gameState.playerScores.set(player.id, 0);
       });
+    } else if (this.gameState.gameMode === 'chaos') {
+      // Modo caos: precisa de pelo menos 2 jogadores (não telespectadores)
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      if (availablePlayers.length < 2) {
+        alert('Precisa de pelo menos 2 jogadores para começar!');
+        return;
+      }
+      // Inicializar pontuação individual
+      availablePlayers.forEach(player => {
+        this.gameState.playerScores.set(player.id, 0);
+      });
     }
 
     this.gameState.isGameActive = true;
@@ -1523,6 +2400,35 @@ export default class ContextoGame {
         revealedWordsCount: 0,
         nextRevealPlayerId: firstPlayer?.id || null,
       };
+    } else if (this.gameState.gameMode === 'chaos') {
+      // Modo caos: todos começam com todas as palavras ocultas
+      // Revelação automática a cada 5 segundos
+      // Todos podem adivinhar simultaneamente via chat
+      const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+      
+      this.gameState.roundState = {
+        currentTeam: null,
+        currentPlayerId: null,
+        question: adaptedQuestion,
+        visibleWords: Array.from({ length: gameModeConfig.maxWords }, () => false), // Todas ocultas
+        guess: '',
+        points: 0,
+        roundStarted: true, // Jogo já começa ativo
+        roundEnded: false,
+        revealedWordsCount: 0,
+        nextRevealPlayerId: null,
+        // Inicializar campos do modo Caos
+        chaosGuesses: [],
+        autoRevealTimer: null,
+        lastRevealTime: Date.now(), // Começar o timer agora
+        revealedWordsIndices: [],
+        correctGuesses: [],
+        nextRevealIndex: 0,
+      };
+      
+      // Iniciar timer de revelação automática (a cada 5 segundos)
+      // A primeira palavra será revelada após 5 segundos
+      this.startChaosAutoReveal();
     }
     
     console.log('Round state criado:', this.gameState.roundState);
@@ -1540,8 +2446,12 @@ export default class ContextoGame {
         payload.currentTeam = 'team1';
         payload.currentPlayerId = this.gameState.roundState.currentPlayerId;
       } else if (this.gameState.gameMode === 'freeForAll') {
-        payload.visibleWords = this.gameState.roundState.visibleWords;
         payload.nextRevealPlayerId = this.gameState.roundState.nextRevealPlayerId;
+        payload.visibleWords = this.gameState.roundState.visibleWords;
+        payload.revealedWordsCount = this.gameState.roundState.revealedWordsCount;
+      } else if (this.gameState.gameMode === 'chaos') {
+        // Modo caos: não precisa de payload especial, todos podem agir
+        payload.visibleWords = this.gameState.roundState.visibleWords;
         payload.revealedWordsCount = this.gameState.roundState.revealedWordsCount;
       }
       
@@ -1669,25 +2579,32 @@ export default class ContextoGame {
       } else if (this.gameState.gameMode === 'freeForAll') {
         const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
         canStart = isAdmin && availablePlayers.length >= 2;
+      } else if (this.gameState.gameMode === 'chaos') {
+        const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+        canStart = isAdmin && availablePlayers.length >= 2;
       }
       
       startGameBtn.disabled = !canStart;
     }
   }
 
-  private addPlayer(id: string, name: string, isAdmin: boolean = false) {
+  private addPlayer(id: string, name: string, isAdmin: boolean = false, photo?: string) {
     // Verificar se já existe
     const existingPlayer = this.gameState.players.find((p) => p.id === id || p.name === name);
     if (existingPlayer) {
       // Atualizar informações do jogador existente
       existingPlayer.name = name;
       existingPlayer.isAdmin = isAdmin;
+      if (photo !== undefined) {
+        existingPlayer.photo = photo;
+      }
       return;
     }
     
     const newPlayer: Player = {
       id,
       name,
+      photo: photo,
       team: null,
       isAdmin: isAdmin,
     };
@@ -1698,6 +2615,11 @@ export default class ContextoGame {
   private updateDisplay() {
     if (!this.gameElement) return;
 
+    // Salvar o foco atual no input do Caos antes de atualizar
+    const chaosInput = this.gameElement.querySelector('#chaos-guess-input') as HTMLInputElement;
+    const hadFocus = document.activeElement === chaosInput;
+    const savedInputValue = chaosInput?.value || '';
+
     // Aplicar classe do tema
     const themeClass = this.getThemeClass();
     this.gameElement.className = `contexto-game ${themeClass}`.trim();
@@ -1707,6 +2629,24 @@ export default class ContextoGame {
     
     // Reconfigurar listeners
     this.setupEventListeners();
+    
+    // Reconfigurar listeners do modo Caos após atualizar o display
+    // Usar setTimeout para garantir que o HTML foi completamente renderizado
+    if (this.gameState.gameMode === 'chaos' && this.gameState.isGameActive && !this.gameState.roundState.roundEnded) {
+      setTimeout(() => {
+        this.setupChaosListeners();
+        this.updateChaosTimer();
+        
+        // Restaurar foco e valor do input se estava focado antes
+        if (hadFocus) {
+          const newChaosInput = this.gameElement?.querySelector('#chaos-guess-input') as HTMLInputElement;
+          if (newChaosInput) {
+            newChaosInput.value = savedInputValue;
+            newChaosInput.focus();
+          }
+        }
+      }, 50);
+    }
 
     // Atualizar botão de iniciar
     if (!this.gameState.isGameActive) {
@@ -1714,7 +2654,7 @@ export default class ContextoGame {
     }
   }
 
-  private processRoomPlayers(data: { players: Array<{ id: string; name: string; isAdmin?: boolean }>; adminId?: string | null }) {
+  private processRoomPlayers(data: { players: Array<{ id: string; name: string; photo?: string; isAdmin?: boolean }>; adminId?: string | null }) {
     console.log('📥 Processando room-players:', data);
     console.log('📦 Payload completo:', JSON.stringify(data, null, 2));
     console.log('🔍 Tipo de adminId:', typeof data.adminId);
@@ -1754,7 +2694,7 @@ export default class ContextoGame {
     players.forEach((roomPlayer) => {
       const isAdmin = Boolean(roomPlayer.isAdmin || (data.adminId && String(roomPlayer.id) === String(data.adminId)));
       console.log(`➕ Adicionando jogador: ${roomPlayer.name} (${roomPlayer.id}), admin: ${isAdmin}`);
-      this.addPlayer(roomPlayer.id, roomPlayer.name, isAdmin);
+      this.addPlayer(roomPlayer.id, roomPlayer.name, isAdmin, roomPlayer.photo);
     });
     
     // Adicionar este jogador - verificar se é admin
@@ -1768,7 +2708,18 @@ export default class ContextoGame {
     console.log(`🔍 Comparação: "${currentPlayerIdStr}" === "${adminIdStr}" = ${currentPlayerIsAdmin}`);
     console.log(`👑 Este jogador é admin? ${currentPlayerIsAdmin}`);
     
-    this.addPlayer(currentPlayerId, this.playerName, currentPlayerIsAdmin);
+    // Obter foto do jogador atual do localStorage
+    let currentPlayerPhoto: string | undefined;
+    try {
+      const savedPhoto = localStorage.getItem('playerPhoto');
+      if (savedPhoto) {
+        currentPlayerPhoto = savedPhoto;
+      }
+    } catch (error) {
+      console.warn('Erro ao obter foto do localStorage:', error);
+    }
+    
+    this.addPlayer(currentPlayerId, this.playerName, currentPlayerIsAdmin, currentPlayerPhoto);
     
     // Verificar se há admin após adicionar todos
     let hasAdmin = this.gameState.players.some((p) => p.isAdmin);
@@ -1877,8 +2828,8 @@ export default class ContextoGame {
     });
 
     // Listener para quando jogadores entram/saem da sala
-    this.socket.on('player-joined', (data: { playerId: string; playerName: string; isAdmin?: boolean }) => {
-      this.addPlayer(data.playerId, data.playerName, data.isAdmin || false);
+    this.socket.on('player-joined', (data: { playerId: string; playerName: string; playerPhoto?: string; isAdmin?: boolean }) => {
+      this.addPlayer(data.playerId, data.playerName, data.isAdmin || false, data.playerPhoto);
       this.saveGameState(); // Salvar após mudanças
       this.updateDisplay();
     });
@@ -1914,8 +2865,42 @@ export default class ContextoGame {
       this.updateDisplay();
     });
 
-    this.socket.on('room-players', (data: { players: Array<{ id: string; name: string; isAdmin?: boolean }>; adminId?: string }) => {
+    this.socket.on('room-players', (data: { players: Array<{ id: string; name: string; photo?: string; isAdmin?: boolean }>; adminId?: string }) => {
       this.processRoomPlayers(data);
+    });
+
+    // Listener para atualização de nome/foto do jogador
+    this.socket.on('player-name-updated', (data: { playerId: string; oldName: string; newName: string; newPhoto?: string }) => {
+      const player = this.gameState.players.find((p) => p.id === data.playerId);
+      if (player) {
+        player.name = data.newName;
+        if (data.newPhoto !== undefined) {
+          player.photo = data.newPhoto;
+        }
+        // Atualizar também nos times
+        const team1Player = this.gameState.team1.find((p) => p.id === data.playerId);
+        if (team1Player) {
+          team1Player.name = data.newName;
+          if (data.newPhoto !== undefined) {
+            team1Player.photo = data.newPhoto;
+          }
+        }
+        const team2Player = this.gameState.team2.find((p) => p.id === data.playerId);
+        if (team2Player) {
+          team2Player.name = data.newName;
+          if (data.newPhoto !== undefined) {
+            team2Player.photo = data.newPhoto;
+          }
+        }
+        const spectatorPlayer = this.gameState.spectators.find((p) => p.id === data.playerId);
+        if (spectatorPlayer) {
+          spectatorPlayer.name = data.newName;
+          if (data.newPhoto !== undefined) {
+            spectatorPlayer.photo = data.newPhoto;
+          }
+        }
+        this.updateDisplay();
+      }
     });
 
     this.socket.on('game-message', (data: { event: string; payload: any; from: string; fromName?: string }) => {
@@ -1979,10 +2964,31 @@ export default class ContextoGame {
           break;
         case 'game-mode-selected':
           const { mode } = data.payload;
-          if (mode && (mode === 'classic' || mode === 'freeForAll')) {
+          if (mode && (mode === 'classic' || mode === 'freeForAll' || mode === 'chaos')) {
             this.gameState.gameMode = mode;
             this.updateDisplay();
             this.updateStartButton();
+          }
+          break;
+        case 'score-limit-changed':
+          const { scoreLimit } = data.payload;
+          if (scoreLimit && scoreLimit > 0) {
+            this.gameState.scoreLimit = scoreLimit;
+            this.saveGameState();
+            this.updateDisplay();
+          }
+          break;
+        case 'game-ended':
+          const { winnerId, winnerName, winnerScore, reason } = data.payload;
+          if (reason === 'score-limit') {
+            this.gameState.gameEnded = true;
+            this.gameState.winner = {
+              id: winnerId,
+              name: winnerName,
+              score: winnerScore
+            };
+            this.saveGameState();
+            this.updateDisplay();
           }
           break;
         case 'teams-randomized':
@@ -2101,6 +3107,16 @@ export default class ContextoGame {
           this.saveGameState();
           this.updateDisplay();
           break;
+        case 'chaos-word-revealed':
+          const { wordIndex: chaosWordIndex, visibleWords: chaosVisibleWords, revealedWordsIndices, lastRevealTime: chaosLastRevealTime } = data.payload;
+          this.gameState.roundState.visibleWords = chaosVisibleWords;
+          this.gameState.roundState.revealedWordsIndices = revealedWordsIndices;
+          this.gameState.roundState.revealedWordsCount = revealedWordsIndices?.length || 0;
+          this.gameState.roundState.lastRevealTime = chaosLastRevealTime;
+          this.saveGameState();
+          this.updateDisplay();
+          this.updateChaosTimer();
+          break;
         case 'free-for-all-guess':
           const { playerId: _guessPlayerId, playerName: _guessPlayerName, guess: ffaGuess, isCorrect: _ffaIsCorrect, points: ffaPoints, playerScores: newPlayerScores } = data.payload;
           this.gameState.roundState.guess = ffaGuess;
@@ -2114,6 +3130,67 @@ export default class ContextoGame {
           this.gameState.roundState.points = ffaPoints;
           this.saveGameState();
           this.updateDisplay();
+          break;
+        case 'chaos-guess':
+          const { guess: chaosGuessData, isCorrect: chaosIsCorrect } = data.payload;
+          if (chaosGuessData) {
+            if (!this.gameState.roundState.chaosGuesses) {
+              this.gameState.roundState.chaosGuesses = [];
+            }
+            // Verificar se já existe
+            const exists = this.gameState.roundState.chaosGuesses.some(
+              g => g.playerId === chaosGuessData.playerId && g.timestamp === chaosGuessData.timestamp
+            );
+            if (!exists) {
+              this.gameState.roundState.chaosGuesses.push(chaosGuessData);
+            }
+            
+            // Se está correto e tem order/points, significa que já foi processado pelo jogador que acertou
+            if (chaosIsCorrect && chaosGuessData.isCorrect && chaosGuessData.order) {
+              // Já foi processado pelo jogador que acertou, apenas atualizar pontuações localmente
+              if (!this.gameState.roundState.correctGuesses) {
+                this.gameState.roundState.correctGuesses = [];
+              }
+              const alreadyInList = this.gameState.roundState.correctGuesses.some(
+                g => g.playerId === chaosGuessData.playerId
+              );
+              if (!alreadyInList) {
+                this.gameState.roundState.correctGuesses.push(chaosGuessData);
+              // Atualizar pontuação
+              const currentScore = this.gameState.playerScores.get(chaosGuessData.playerId) || 0;
+                const newScore = currentScore + (chaosGuessData.points || 0);
+                this.gameState.playerScores.set(chaosGuessData.playerId, newScore);
+                
+                // Verificar se atingiu a pontuação limite
+                if (this.gameState.scoreLimit && newScore >= this.gameState.scoreLimit) {
+                  this.gameState.gameEnded = true;
+                  this.gameState.winner = {
+                    id: chaosGuessData.playerId,
+                    name: chaosGuessData.playerName,
+                    score: newScore
+                  };
+                  this.saveGameState();
+                  this.updateDisplay();
+                  return;
+                }
+            }
+            
+            // Verificar se a rodada deve terminar (todos acertaram ou todas palavras reveladas)
+              if (this.gameState.gameMode === 'chaos' && !this.gameState.roundState.roundEnded) {
+                this.checkChaosRoundEnd();
+              }
+            }
+          }
+          this.saveGameState();
+          this.updateDisplay();
+          
+          // Fazer scroll do chat
+          setTimeout(() => {
+            const chatMessages = this.gameElement?.querySelector('#chaos-chat-messages');
+            if (chatMessages) {
+              chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+          }, 100);
           break;
       }
     });
@@ -2276,6 +3353,8 @@ export default class ContextoGame {
   }
 
   public destroy() {
+    // Parar timer do modo Caos
+    this.stopChaosAutoReveal();
     // Salvar estado antes de destruir
     this.saveGameState();
     

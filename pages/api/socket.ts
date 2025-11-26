@@ -4,6 +4,7 @@ import { Server as HTTPServer } from 'http';
 
 let io: SocketIOServer | null = null;
 const playerNames = new Map<string, string>(); // socket.id -> playerName
+const playerPhotos = new Map<string, string>(); // socket.id -> playerPhoto (base64)
 const roomAdmins = new Map<string, string>(); // roomId -> adminSocketId (primeiro jogador)
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -61,16 +62,35 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           console.log(`Jogador ${socket.id} atualizou nome de "${oldName}" para "${playerName}"`);
         });
 
+        // Atualizar foto do jogador
+        socket.on('update-player-photo', (playerPhoto: string) => {
+          if (playerPhoto) {
+            playerPhotos.set(socket.id, playerPhoto);
+          } else {
+            playerPhotos.delete(socket.id);
+          }
+          console.log(`Jogador ${socket.id} atualizou foto`);
+        });
+
         // Notificar mudança de nome na sala
-        socket.on('player-name-changed', (data: { roomId: string; newName: string }) => {
+        socket.on('player-name-changed', (data: { roomId: string; newName: string; newPhoto?: string }) => {
           const oldName = playerNames.get(socket.id) || 'Jogador';
           playerNames.set(socket.id, data.newName);
+          
+          if (data.newPhoto !== undefined) {
+            if (data.newPhoto) {
+              playerPhotos.set(socket.id, data.newPhoto);
+            } else {
+              playerPhotos.delete(socket.id);
+            }
+          }
           
           // Notificar outros jogadores na sala sobre a mudança
           socket.to(data.roomId).emit('player-name-updated', {
             playerId: socket.id,
             oldName: oldName,
             newName: data.newName,
+            newPhoto: data.newPhoto,
           });
         });
 
@@ -141,9 +161,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           console.log(`✅ Admin final: ${adminId}, Este jogador é admin: ${isAdmin}`);
           
           // Notificar outros jogadores
+          const photo = playerPhotos.get(socket.id) || '';
           socket.to(roomId).emit('player-joined', {
             playerId: socket.id,
             playerName: name,
+            playerPhoto: photo,
             isAdmin: isAdmin,
           });
 
@@ -168,6 +190,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             .map((id) => ({
               id,
               name: playerNames.get(id) || 'Jogador',
+              photo: playerPhotos.get(id) || '',
               isAdmin: finalAdminId ? id === finalAdminId : false,
             }))
             .filter((p) => p.id !== socket.id) : [];
@@ -274,6 +297,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           }
           
           playerNames.delete(socket.id);
+          playerPhotos.delete(socket.id);
         });
       });
       

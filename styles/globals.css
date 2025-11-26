@@ -178,9 +178,11 @@ a {
 }
 
 .game-container {
-  max-width: 1200px;
-  margin: 2rem auto;
-  padding: 0 2rem;
+  max-width: 100%;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1rem;
+  box-sizing: border-box;
 }
 
 .game-canvas-wrapper {
@@ -190,9 +192,13 @@ a {
   box-shadow: 0 2px 8px var(--shadow);
   display: flex;
   justify-content: center;
-  align-items: center;
-  min-height: 600px;
+  align-items: flex-start;
+  min-height: calc(100vh - 200px);
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   transition: background 0.3s ease, box-shadow 0.3s ease;
+  overflow: visible;
 }
 
 .loading {
@@ -520,11 +526,15 @@ a {
 .player-tag {
   background: var(--bg-tertiary);
   color: var(--text-primary);
-  padding: 0.25rem 0.75rem;
+  padding: 0.5rem 1rem;
   border-radius: 20px;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 500;
   border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 40px;
 }
 
 .player-tag.you {
