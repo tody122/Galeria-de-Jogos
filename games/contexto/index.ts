@@ -170,14 +170,32 @@ export default class ContextoGame {
     return this.getGameplayHTML();
   }
 
+  private getGameModeBadgeHTML(): string {
+    if (!this.gameState.gameMode) return '';
+    const modeConfig = GAME_MODES[this.gameState.gameMode];
+    if (!modeConfig) return '';
+    
+    // Ícone e classe específica por modo
+    const modeIcon = this.gameState.gameMode === 'classic' ? '⚔️' : '🎯';
+    const modeClass = this.gameState.gameMode === 'classic' ? 'mode-classic' : 'mode-free-for-all';
+    
+    return `
+      <div class="game-mode-badge ${modeClass}">
+        <span class="mode-badge-icon">${modeIcon}</span>
+        <span class="mode-badge-text">${modeConfig.name}</span>
+      </div>
+    `;
+  }
+
   private getLobbyHTML(): string {
     return `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Contexto</h2>
-          <p class="game-subtitle">Escolha seu time e comece a jogar!</p>
+          <h2>🎯 Contexto ${this.getGameModeBadgeHTML()}</h2>
+          <p class="game-subtitle">${this.gameState.gameMode === 'freeForAll' ? 'Aguarde o administrador iniciar o jogo!' : 'Escolha seu time e comece a jogar!'}</p>
         </div>
 
+        ${this.gameState.gameMode !== 'freeForAll' ? `
         <div class="contexto-teams-section">
           <div class="team-panel team1-panel">
             <h3>Azul 🔵</h3>
@@ -195,6 +213,7 @@ export default class ContextoGame {
             ${this.getJoinTeamButtonHTML('team2')}
           </div>
         </div>
+        ` : ''}
 
         <div class="players-waiting" id="players-waiting">
           <h3>Jogadores sem time</h3>
@@ -386,7 +405,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Todos Contra Todos</h2>
+          <h2>Todos Contra Todos${this.getGameModeBadgeHTML()}</h2>
           <p class="game-subtitle">Revele palavras uma por vez e adivinhe!</p>
         </div>
 
@@ -459,7 +478,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Resultado da Rodada</h2>
+          <h2>🎯 Resultado da Rodada ${this.getGameModeBadgeHTML()}</h2>
         </div>
 
         <div class="round-result">
@@ -488,12 +507,14 @@ export default class ContextoGame {
         <h3>👥 Jogadores</h3>
         <div class="all-players-list">
           ${this.gameState.players.map(player => {
-            const teamBadge = player.team === 'team1' ? '🔵' : player.team === 'team2' ? '🔴' : player.team === 'spectator' ? '👁️' : '';
-            const teamName = player.team === 'team1' ? 'Azul' : player.team === 'team2' ? 'Vermelho' : player.team === 'spectator' ? 'Telespectador' : 'Sem time';
+            // No modo todos contra todos, não mostrar badges de times
+            const showTeamBadge = this.gameState.gameMode !== 'freeForAll';
+            const teamBadge = showTeamBadge ? (player.team === 'team1' ? '🔵' : player.team === 'team2' ? '🔴' : player.team === 'spectator' ? '👁️' : '') : (player.team === 'spectator' ? '👁️' : '');
+            const teamName = showTeamBadge ? (player.team === 'team1' ? 'Azul' : player.team === 'team2' ? 'Vermelho' : player.team === 'spectator' ? 'Telespectador' : 'Sem time') : (player.team === 'spectator' ? 'Telespectador' : '');
             return `
               <div class="player-list-item ${player.name === this.playerName ? 'you' : ''} ${player.isAdmin ? 'admin' : ''}">
                 <span class="player-name">${player.isAdmin ? '👑 ' : ''}${player.name}${player.name === this.playerName ? ' (você)' : ''}</span>
-                ${player.team ? `<span class="player-team-badge">${teamBadge} ${teamName}</span>` : ''}
+                ${teamBadge && showTeamBadge ? `<span class="player-team-badge">${teamBadge} ${teamName}</span>` : (player.team === 'spectator' ? '<span class="player-team-badge">👁️ Telespectador</span>' : '')}
                 ${player.isAdmin ? '<span class="admin-badge">Admin</span>' : ''}
               </div>
             `;
@@ -585,7 +606,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Sua Vez!</h2>
+          <h2>🎯 Sua Vez! ${this.getGameModeBadgeHTML()}</h2>
           <p class="game-subtitle">Oculte as palavras que desejar</p>
         </div>
 
@@ -634,7 +655,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Contexto</h2>
+          <h2>🎯 Contexto ${this.getGameModeBadgeHTML()}</h2>
           <p class="game-subtitle">Aguardando seleção de palavras...</p>
         </div>
         
@@ -662,7 +683,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Contexto</h2>
+          <h2>🎯 Contexto ${this.getGameModeBadgeHTML()}</h2>
           <p class="game-subtitle">${teamName} está tentando adivinhar!</p>
         </div>
 
@@ -697,7 +718,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Adivinhe a Palavra!</h2>
+          <h2>🎯 Adivinhe a Palavra! ${this.getGameModeBadgeHTML()}</h2>
           <p class="game-subtitle">Use as palavras visíveis para adivinhar</p>
         </div>
 
@@ -732,7 +753,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Contexto</h2>
+          <h2>🎯 Contexto ${this.getGameModeBadgeHTML()}</h2>
           <p class="game-subtitle">Aguardando sua vez...</p>
         </div>
         <div class="waiting-message">
@@ -754,7 +775,7 @@ export default class ContextoGame {
     const content = `
       <div class="contexto-container">
         <div class="contexto-header">
-          <h2>🎯 Resultado da Rodada</h2>
+          <h2>🎯 Resultado da Rodada ${this.getGameModeBadgeHTML()}</h2>
         </div>
 
         <div class="round-result">
@@ -927,13 +948,16 @@ export default class ContextoGame {
     const joinSpectatorBtn = this.gameElement.querySelector('#join-spectator-btn');
     const startGameBtn = this.gameElement.querySelector('#start-game-btn');
 
-    joinTeam1Btn?.addEventListener('click', () => {
-      this.joinTeam('team1');
-    });
+    // Só adicionar listeners de times se não estiver no modo todos contra todos
+    if (this.gameState.gameMode !== 'freeForAll') {
+      joinTeam1Btn?.addEventListener('click', () => {
+        this.joinTeam('team1');
+      });
 
-    joinTeam2Btn?.addEventListener('click', () => {
-      this.joinTeam('team2');
-    });
+      joinTeam2Btn?.addEventListener('click', () => {
+        this.joinTeam('team2');
+      });
+    }
 
     joinSpectatorBtn?.addEventListener('click', () => {
       this.joinSpectator();

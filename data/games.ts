@@ -8,6 +8,18 @@ export const gamesList: Game[] = [
     multiplayer: true,
   },
   {
+    id: 'sintonia',
+    name: 'Sintonia',
+    description: 'Jogo de sintonia e conexão. Em breve!',
+    multiplayer: true,
+  },
+  {
+    id: 'a-faixa',
+    name: 'Meio Termo',
+    description: 'Jogo de meio termo e estratégia. Em breve!',
+    multiplayer: true,
+  },
+  {
     id: 'exemplo-single',
     name: 'Jogo Single Player',
     description: 'Exemplo de jogo para um jogador',
