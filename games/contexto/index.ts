@@ -2064,7 +2064,7 @@ export default class ContextoGame {
     if (this.socket && this.roomId) {
       this.socket.emit('game-broadcast', {
         roomId: this.roomId,
-        event: eventName,
+        event: 'word-revealed',
         payload: {
           wordIndex: index,
           visibleWords: this.gameState.roundState.visibleWords,
