@@ -25,5 +25,11 @@ export const gamesList: Game[] = [
     description: 'Exemplo de jogo para um jogador',
     multiplayer: false,
   },
+  {
+    id: 'colorama',
+    name: 'Colorama',
+    description: 'Jogo de cores e estratégia. Em desenvolvimento!',
+    multiplayer: true,
+  },
 ];
 

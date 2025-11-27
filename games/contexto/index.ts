@@ -42,6 +42,9 @@ interface RoundState {
   roundEnded: boolean;
   revealedWordsCount?: number; // Para modo todos contra todos - quantas palavras foram reveladas
   nextRevealPlayerId?: string | null; // Próximo jogador que pode revelar uma palavra
+  canGuessAfterReveal?: boolean; // Para modo todos contra todos - se o jogador pode responder após revelar
+  winningPlayerId?: string | null; // ID do jogador que acertou (para exibição no resultado)
+  winningPlayerName?: string | null; // Nome do jogador que acertou
   // Campos específicos para modo Caos
   chaosGuesses?: Guess[]; // Array de palpites no modo Caos
   autoRevealTimer?: number | null; // ID do timer de revelação automática
@@ -427,6 +430,12 @@ export default class ContextoGame {
       return this.getQuestionSelectorHTML();
     }
 
+    // Se é o jogador atual e o round já começou (ele já enviou as palavras, pode vê-las)
+    if (isCurrentPlayer && this.gameState.roundState.roundStarted) {
+      console.log('Retornando wordsSenderHTML');
+      return this.getWordsSenderHTML();
+    }
+
     // Se é do time atual mas não é o jogador atual e o round ainda não começou (mostrar aviso)
     if (isInCurrentTeam && !isCurrentPlayer && !this.gameState.roundState.roundStarted) {
       console.log('Retornando waitingForWordsHTML');
@@ -455,7 +464,7 @@ export default class ContextoGame {
   }
 
   private getFreeForAllHTML(): string {
-    const { question, visibleWords, nextRevealPlayerId, revealedWordsCount } = this.gameState.roundState;
+    const { question, visibleWords, nextRevealPlayerId, revealedWordsCount, canGuessAfterReveal } = this.gameState.roundState;
     if (!question) return '';
 
     const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
@@ -463,6 +472,7 @@ export default class ContextoGame {
     const canReveal = currentPlayer?.id === nextRevealPlayerId && !isSpectator;
     const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
     const nextPlayer = availablePlayers.find(p => p.id === nextRevealPlayerId);
+    const canGuess = canGuessAfterReveal && currentPlayer?.id === nextRevealPlayerId && !isSpectator;
     
     const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
 
@@ -479,7 +489,7 @@ export default class ContextoGame {
 
         <div class="free-for-all-game">
           <div class="reveal-section">
-            ${canReveal ? `
+            ${canReveal && !canGuess ? `
               <div class="reveal-controls">
                 <p class="reveal-hint">🎲 É sua vez! Escolha uma palavra para revelar:</p>
                 <div class="words-grid" id="reveal-words-grid">
@@ -493,6 +503,18 @@ export default class ContextoGame {
                       ${visibleWords[index] ? word : '?'}
                     </button>
                   `).join('')}
+                </div>
+              </div>
+            ` : canGuess ? `
+              <div class="after-reveal-options">
+                <p class="reveal-hint">✅ Você revelou uma palavra! Escolha uma opção:</p>
+                <div class="action-buttons">
+                  <button class="submit-guess-btn" id="submit-guess-btn">
+                    Responder
+                  </button>
+                  <button class="pass-turn-btn" id="pass-turn-btn">
+                    Passar a Vez
+                  </button>
                 </div>
               </div>
             ` : `
@@ -510,7 +532,7 @@ export default class ContextoGame {
             </div>
           </div>
 
-          ${!isSpectator ? `
+          ${canGuess ? `
             <div class="guess-input-section">
               <input 
                 type="text" 
@@ -519,15 +541,16 @@ export default class ContextoGame {
                 placeholder="Digite sua resposta..."
                 autocomplete="off"
               />
-              <button class="submit-guess-btn" id="submit-guess-btn">
-                Enviar Resposta
-              </button>
             </div>
-          ` : `
+          ` : !isSpectator && !canReveal ? `
+            <div class="waiting-note">
+              <p>⏳ Aguarde sua vez para revelar uma palavra ou responder</p>
+            </div>
+          ` : isSpectator ? `
             <div class="spectator-note">
               <p>👁️ Você é telespectador e não pode participar</p>
             </div>
-          `}
+          ` : ''}
         </div>
       </div>
     `;
@@ -536,11 +559,13 @@ export default class ContextoGame {
   }
 
   private getFreeForAllRoundEndHTML(): string {
-    const { question, guess } = this.gameState.roundState;
+    const { question, guess, winningPlayerId, winningPlayerName } = this.gameState.roundState;
+    if (!question) return '';
+    
     const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
     const playerScore = this.gameState.playerScores.get(currentPlayer?.id || '') || 0;
     const normalizedGuess = this.normalizeWord(guess.trim());
-    const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
+    const normalizedAnswer = this.normalizeWord(question.answer.trim());
     const isCorrect = normalizedGuess === normalizedAnswer;
 
     const content = `
@@ -551,11 +576,32 @@ export default class ContextoGame {
 
         <div class="round-result">
           <div class="result-info">
-            <p class="answer-reveal">Resposta correta: <strong>${question?.answer}</strong></p>
-            <p class="guess-result ${isCorrect ? 'correct' : 'incorrect'}">
-              ${isCorrect ? '✅ Você acertou!' : '❌ Você errou!'}
-            </p>
-            ${isCorrect ? `<p class="points-earned">+${this.gameState.roundState.points} pontos!</p>` : `<p class="points-lost">-5 pontos!</p>`}
+            ${isCorrect && winningPlayerName ? `
+              <div class="question-display-full">
+                <h3>📝 Pergunta Completa:</h3>
+                <p class="full-question-text">${question.question}</p>
+              </div>
+              
+              <div class="winner-display">
+                <p class="guess-result correct">✅ <strong>${winningPlayerName}</strong> acertou!</p>
+                <p class="answer-reveal">Resposta correta: <strong>${question.answer}</strong></p>
+                <p class="points-earned">+${this.gameState.roundState.points} pontos para ${winningPlayerName}!</p>
+              </div>
+            ` : `
+              <div class="question-display-full">
+                <h3>📝 Pergunta Completa:</h3>
+                <p class="full-question-text">${question.question}</p>
+              </div>
+              
+              <div class="incorrect-answer-display">
+                <p class="guess-result incorrect">❌ Você errou!</p>
+                <div class="answer-comparison">
+                  <p class="answer-reveal">Resposta correta: <strong>${question.answer}</strong></p>
+                  <p class="guess-reveal">Sua resposta: <strong>${guess}</strong></p>
+                </div>
+                <p class="points-lost">-5 pontos!</p>
+              </div>
+            `}
             <p class="your-score">Sua pontuação total: <strong>${playerScore}</strong> pontos</p>
           </div>
 
@@ -1059,6 +1105,46 @@ export default class ContextoGame {
     return this.getGameplayWrapper(content);
   }
 
+  private getWordsSenderHTML(): string {
+    const { question, visibleWords, currentTeam } = this.gameState.roundState;
+    if (!question) return '';
+
+    const formattedQuestion = this.formatQuestionWithBlanks(question, visibleWords);
+    const teammate = this.gameState.players.find(
+      (p) => p.team === currentTeam && p.name !== this.playerName
+    );
+    const teammateName = teammate?.name || 'seu parceiro';
+
+    const content = `
+      <div class="contexto-container">
+        <div class="contexto-header">
+          <h2>🎯 Contexto ${this.getGameModeBadgeHTML()}</h2>
+          <p class="game-subtitle">Aguardando ${teammateName} adivinhar...</p>
+        </div>
+
+        <div class="spectator-words-section">
+          <div class="spectator-info">
+            <p>✅ <strong>Você escolheu estas palavras:</strong></p>
+            <p class="waiting-hint">⏳ Aguarde enquanto <strong>${teammateName}</strong> tenta adivinhar a resposta!</p>
+          </div>
+          
+          <div class="formatted-question">
+            <h3>Frase:</h3>
+            <div class="question-display">
+              <p class="formatted-question-text">${formattedQuestion}</p>
+            </div>
+          </div>
+
+          <div class="spectator-note">
+            <p>👀 Você pode ver as palavras que escolheu. Apenas ${teammateName} pode responder!</p>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    return this.getGameplayWrapper(content);
+  }
+
   private getSpectatorWordsHTML(): string {
     const { question, visibleWords, currentPlayerId, currentTeam } = this.gameState.roundState;
     if (!question) return '';
@@ -1155,10 +1241,13 @@ export default class ContextoGame {
 
   private getRoundEndHTML(): string {
     const { question, guess, points } = this.gameState.roundState;
+    if (!question) return '';
+    
     const normalizedGuess = this.normalizeWord(guess.trim());
-    const normalizedAnswer = this.normalizeWord(question?.answer.trim() || '');
+    const normalizedAnswer = this.normalizeWord(question.answer.trim());
     const isCorrect = normalizedGuess === normalizedAnswer;
     const currentTeam = this.gameState.roundState.currentTeam;
+    const teamName = currentTeam === 'team1' ? 'Azul' : 'Vermelho';
 
     const content = `
       <div class="contexto-container">
@@ -1168,11 +1257,28 @@ export default class ContextoGame {
 
         <div class="round-result">
           <div class="result-info">
-            <p class="answer-reveal">Resposta correta: <strong>${question?.answer}</strong></p>
-            <p class="guess-result ${isCorrect ? 'correct' : 'incorrect'}">
-              ${isCorrect ? '✅ Acertou!' : '❌ Errou!'}
-            </p>
-            ${isCorrect ? `<p class="points-earned">+${points} pontos para o ${currentTeam === 'team1' ? 'Azul' : 'Vermelho'}!</p>` : ''}
+            <div class="question-display-full">
+              <h3>📝 Pergunta Completa:</h3>
+              <p class="full-question-text">${question.question}</p>
+            </div>
+            
+            <div class="answer-section">
+              ${isCorrect ? `
+                <div class="correct-answer-display">
+                  <p class="guess-result correct">✅ Acertou!</p>
+                  <p class="answer-reveal">Resposta correta: <strong>${question.answer}</strong></p>
+                  <p class="points-earned">+${points} pontos para o ${teamName}!</p>
+                </div>
+              ` : `
+                <div class="incorrect-answer-display">
+                  <p class="guess-result incorrect">❌ Errou!</p>
+                  <div class="answer-comparison">
+                    <p class="answer-reveal">Resposta correta: <strong>${question.answer}</strong></p>
+                    <p class="guess-reveal">Sua resposta: <strong>${guess}</strong></p>
+                  </div>
+                </div>
+              `}
+            </div>
           </div>
 
           <button class="next-round-btn" id="next-round-btn">
@@ -1353,9 +1459,15 @@ export default class ContextoGame {
 
     // Botão de aleatorizar times (apenas admin)
     const randomizeTeamsBtn = this.gameElement.querySelector('#randomize-teams-btn');
-    randomizeTeamsBtn?.addEventListener('click', () => {
-      this.randomizeTeams();
-    });
+    if (randomizeTeamsBtn) {
+      console.log('✅ Botão de aleatorizar encontrado, anexando listener');
+      randomizeTeamsBtn.addEventListener('click', () => {
+        console.log('🎲 Botão de aleatorizar clicado!');
+        this.randomizeTeams();
+      });
+    } else {
+      console.log('⚠️ Botão de aleatorizar não encontrado');
+    }
 
     // Listener para pontuação limite (modo Caos) - slider
     const scoreLimitSlider = this.gameElement.querySelector('#score-limit-slider') as HTMLInputElement;
@@ -1474,6 +1586,12 @@ export default class ContextoGame {
       }
     });
 
+    // Listener para passar a vez (modo todos contra todos)
+    const passTurnBtn = this.gameElement.querySelector('#pass-turn-btn');
+    passTurnBtn?.addEventListener('click', () => {
+      this.passTurn();
+    });
+
     // Listener para chat do modo Caos (será reconfigurado em setupChaosListeners após updateDisplay)
     // Não configurar aqui porque o HTML será recriado em updateDisplay
 
@@ -1563,6 +1681,12 @@ export default class ContextoGame {
     const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
 
     if (this.gameState.gameMode === 'freeForAll') {
+      // Verificar se o jogador pode responder (após revelar uma palavra)
+      if (!this.gameState.roundState.canGuessAfterReveal || currentPlayer?.id !== this.gameState.roundState.nextRevealPlayerId) {
+        alert('Você precisa revelar uma palavra primeiro ou não é sua vez!');
+        return;
+      }
+
       // Modo todos contra todos: pontuação individual
       if (currentPlayer) {
         const currentScore = this.gameState.playerScores.get(currentPlayer.id) || 0;
@@ -1573,6 +1697,8 @@ export default class ContextoGame {
           const points = hiddenCount;
           this.gameState.playerScores.set(currentPlayer.id, currentScore + points);
           this.gameState.roundState.points = points;
+          this.gameState.roundState.winningPlayerId = currentPlayer.id;
+          this.gameState.roundState.winningPlayerName = this.playerName;
         } else {
           // Errou: perde 5 pontos
           const penalty = -5;
@@ -1594,11 +1720,14 @@ export default class ContextoGame {
             isCorrect: isCorrect,
             points: this.gameState.roundState.points,
             playerScores: Array.from(this.gameState.playerScores.entries()),
+            winningPlayerId: this.gameState.roundState.winningPlayerId,
+            winningPlayerName: this.gameState.roundState.winningPlayerName,
           },
         });
       }
 
       this.gameState.roundState.roundEnded = true;
+      this.gameState.roundState.canGuessAfterReveal = false;
     } else {
       // Modo clássico: pontuação por time
       const currentTeam = this.gameState.roundState.currentTeam;
@@ -2054,11 +2183,8 @@ export default class ContextoGame {
     this.gameState.roundState.visibleWords[index] = true;
     this.gameState.roundState.revealedWordsCount = (this.gameState.roundState.revealedWordsCount || 0) + 1;
 
-    // Rotacionar para o próximo jogador
-    const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
-    const currentIndex = availablePlayers.findIndex(p => p.id === currentPlayer?.id);
-    const nextIndex = (currentIndex + 1) % availablePlayers.length;
-    this.gameState.roundState.nextRevealPlayerId = availablePlayers[nextIndex]?.id || null;
+    // Após revelar, o jogador pode escolher entre responder ou passar a vez
+    this.gameState.roundState.canGuessAfterReveal = true;
 
     // Enviar para outros jogadores
     if (this.socket && this.roomId) {
@@ -2070,7 +2196,42 @@ export default class ContextoGame {
           visibleWords: this.gameState.roundState.visibleWords,
           revealedWordsCount: this.gameState.roundState.revealedWordsCount,
           nextRevealPlayerId: this.gameState.roundState.nextRevealPlayerId,
+          canGuessAfterReveal: this.gameState.roundState.canGuessAfterReveal,
           gameMode: this.gameState.gameMode,
+        },
+      });
+    }
+
+    this.saveGameState();
+    this.updateDisplay();
+  }
+
+  private passTurn() {
+    if (this.gameState.gameMode !== 'freeForAll') return;
+    
+    const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
+    
+    // Verificar se é a vez do jogador e se ele já revelou
+    if (!this.gameState.roundState.canGuessAfterReveal || currentPlayer?.id !== this.gameState.roundState.nextRevealPlayerId) {
+      alert('Você precisa revelar uma palavra primeiro ou não é sua vez!');
+      return;
+    }
+
+    // Rotacionar para o próximo jogador
+    const availablePlayers = this.gameState.players.filter(p => p.team !== 'spectator');
+    const currentIndex = availablePlayers.findIndex(p => p.id === currentPlayer?.id);
+    const nextIndex = (currentIndex + 1) % availablePlayers.length;
+    this.gameState.roundState.nextRevealPlayerId = availablePlayers[nextIndex]?.id || null;
+    this.gameState.roundState.canGuessAfterReveal = false;
+
+    // Enviar para outros jogadores
+    if (this.socket && this.roomId) {
+      this.socket.emit('game-broadcast', {
+        roomId: this.roomId,
+        event: 'turn-passed',
+        payload: {
+          nextRevealPlayerId: this.gameState.roundState.nextRevealPlayerId,
+          canGuessAfterReveal: this.gameState.roundState.canGuessAfterReveal,
         },
       });
     }
@@ -2138,7 +2299,7 @@ export default class ContextoGame {
       // Iniciar timer de revelação automática
       this.startChaosAutoReveal();
     } else {
-      // Modo clássico: alternar time
+      // Modo clássico: alternar time e jogador dentro do time
       const nextTeam = this.gameState.roundState.currentTeam === 'team1' ? 'team2' : 'team1';
       const nextTeamPlayers = this.gameState[nextTeam];
       
@@ -2149,12 +2310,22 @@ export default class ContextoGame {
         return;
       }
 
-      // Próximo jogador do time (rotação)
-      const currentPlayerIndex = nextTeamPlayers.findIndex(
-        (p) => p.id === this.gameState.roundState.currentPlayerId
-      );
-      const nextPlayerIndex = (currentPlayerIndex + 1) % nextTeamPlayers.length;
-      const nextPlayer = nextTeamPlayers[nextPlayerIndex];
+      // Determinar qual jogador do time deve escolher
+      // Usar o número da rodada para alternar entre os jogadores de forma previsível
+      // Rodada 1: team1, jogador 0
+      // Rodada 2: team2, jogador 0
+      // Rodada 3: team1, jogador 1
+      // Rodada 4: team2, jogador 1
+      // Rodada 5: team1, jogador 0 (volta ao início)
+      // Fórmula: cada 2 rodadas = 1 ciclo completo de times
+      //          (rodada - 1) / 2 arredondado para baixo = qual "ciclo" de times
+      //          ((rodada - 1) / 2) % número_de_jogadores = qual jogador do time
+      
+      const cycleNumber = Math.floor((this.gameState.currentRound - 1) / 2); // Quantos ciclos completos de times
+      const playerIndex = cycleNumber % nextTeamPlayers.length; // Qual jogador dentro do time
+      
+      const nextPlayer = nextTeamPlayers[playerIndex];
+      console.log(`🔄 Rodada ${this.gameState.currentRound}, Time: ${nextTeam}, Jogador: ${nextPlayer.name} (índice ${playerIndex}, ciclo ${cycleNumber})`);
 
       this.gameState.roundState = {
         currentTeam: nextTeam,
@@ -2214,16 +2385,24 @@ export default class ContextoGame {
   }
 
   private randomizeTeams() {
+    console.log('🎲 randomizeTeams() chamado');
+    
     // Verificar se é admin
     const currentPlayer = this.gameState.players.find((p) => p.name === this.playerName);
     const isAdmin = currentPlayer?.isAdmin || false;
     
+    console.log('👤 Jogador atual:', this.playerName);
+    console.log('👑 É admin?', isAdmin);
+    console.log('📋 Todos os jogadores:', this.gameState.players.map(p => ({ name: p.name, isAdmin: p.isAdmin })));
+    
     if (!isAdmin) {
+      console.warn('❌ Não é admin, bloqueando aleatorização');
       alert('Apenas o administrador pode aleatorizar os times!');
       return;
     }
 
     if (this.gameState.isGameActive) {
+      console.warn('❌ Jogo ativo, bloqueando aleatorização');
       alert('Não é possível aleatorizar times durante o jogo!');
       return;
     }
@@ -2234,8 +2413,11 @@ export default class ContextoGame {
       (p) => p.team !== 'spectator'
     );
 
+    console.log('👥 Jogadores para aleatorizar:', playersToRandomize.map(p => p.name));
+
     // Se não há jogadores suficientes
     if (playersToRandomize.length === 0) {
+      console.warn('❌ Nenhum jogador disponível para aleatorizar');
       alert('Não há jogadores para aleatorizar! Os jogadores precisam estar disponíveis (não podem ser telespectadores).');
       return;
     }
@@ -2249,27 +2431,24 @@ export default class ContextoGame {
       player.team = null;
     });
 
-    // Embaralhar os jogadores aleatoriamente
-    const shuffledPlayers = [...playersToRandomize].sort(() => Math.random() - 0.5);
+    // Embaralhar os jogadores aleatoriamente usando Fisher-Yates
+    const shuffledPlayers = [...playersToRandomize];
+    for (let i = shuffledPlayers.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffledPlayers[i], shuffledPlayers[j]] = [shuffledPlayers[j], shuffledPlayers[i]];
+    }
 
-    // Distribuir os jogadores entre os times
-    // Tentar manter os times balanceados (máximo 2 por time)
-    shuffledPlayers.forEach((player) => {
-      if (this.gameState.team1.length < 2 && (this.gameState.team1.length <= this.gameState.team2.length || this.gameState.team2.length >= 2)) {
+    console.log('🔀 Jogadores embaralhados:', shuffledPlayers.map(p => p.name));
+
+    // Distribuir os jogadores entre os times de forma balanceada
+    shuffledPlayers.forEach((player, index) => {
+      // Alternar entre times para balancear
+      if (index % 2 === 0) {
         player.team = 'team1';
         this.gameState.team1.push(player);
-      } else if (this.gameState.team2.length < 2) {
+      } else {
         player.team = 'team2';
         this.gameState.team2.push(player);
-      } else {
-        // Se ambos os times estão cheios, colocar no time com menos jogadores
-        if (this.gameState.team1.length <= this.gameState.team2.length) {
-          player.team = 'team1';
-          this.gameState.team1.push(player);
-        } else {
-          player.team = 'team2';
-          this.gameState.team2.push(player);
-        }
       }
     });
 
@@ -2284,6 +2463,7 @@ export default class ContextoGame {
 
     // Enviar para outros jogadores
     if (this.socket && this.roomId) {
+      console.log('📤 Enviando evento teams-randomized para outros jogadores');
       this.socket.emit('game-broadcast', {
         roomId: this.roomId,
         event: 'teams-randomized',
@@ -2399,6 +2579,9 @@ export default class ContextoGame {
         roundEnded: false,
         revealedWordsCount: 0,
         nextRevealPlayerId: firstPlayer?.id || null,
+        canGuessAfterReveal: false,
+        winningPlayerId: null,
+        winningPlayerName: null,
       };
     } else if (this.gameState.gameMode === 'chaos') {
       // Modo caos: todos começam com todas as palavras ocultas
@@ -3100,10 +3283,20 @@ export default class ContextoGame {
           this.updateDisplay();
           break;
         case 'word-revealed':
-          const { wordIndex: _wordIndex, visibleWords: newVisibleWords, revealedWordsCount, nextRevealPlayerId } = data.payload;
+          const { wordIndex: _wordIndex, visibleWords: newVisibleWords, revealedWordsCount, nextRevealPlayerId, canGuessAfterReveal } = data.payload;
           this.gameState.roundState.visibleWords = newVisibleWords;
           this.gameState.roundState.revealedWordsCount = revealedWordsCount;
           this.gameState.roundState.nextRevealPlayerId = nextRevealPlayerId;
+          if (canGuessAfterReveal !== undefined) {
+            this.gameState.roundState.canGuessAfterReveal = canGuessAfterReveal;
+          }
+          this.saveGameState();
+          this.updateDisplay();
+          break;
+        case 'turn-passed':
+          const { nextRevealPlayerId: newNextRevealPlayerId, canGuessAfterReveal: newCanGuessAfterReveal } = data.payload;
+          this.gameState.roundState.nextRevealPlayerId = newNextRevealPlayerId;
+          this.gameState.roundState.canGuessAfterReveal = newCanGuessAfterReveal;
           this.saveGameState();
           this.updateDisplay();
           break;
@@ -3118,9 +3311,16 @@ export default class ContextoGame {
           this.updateChaosTimer();
           break;
         case 'free-for-all-guess':
-          const { playerId: _guessPlayerId, playerName: _guessPlayerName, guess: ffaGuess, isCorrect: _ffaIsCorrect, points: ffaPoints, playerScores: newPlayerScores } = data.payload;
+          const { playerId: _guessPlayerId, playerName: _guessPlayerName, guess: ffaGuess, isCorrect: _ffaIsCorrect, points: ffaPoints, playerScores: newPlayerScores, winningPlayerId, winningPlayerName } = data.payload;
           this.gameState.roundState.guess = ffaGuess;
           this.gameState.roundState.roundEnded = true;
+          if (winningPlayerId !== undefined) {
+            this.gameState.roundState.winningPlayerId = winningPlayerId;
+          }
+          if (winningPlayerName !== undefined) {
+            this.gameState.roundState.winningPlayerName = winningPlayerName;
+          }
+          this.gameState.roundState.canGuessAfterReveal = false;
           // Atualizar pontuações individuais (tanto para acerto quanto erro)
           if (newPlayerScores) {
             newPlayerScores.forEach(([id, score]: [string, number]) => {
