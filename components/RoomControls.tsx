@@ -45,7 +45,7 @@ export function RoomControls({
     });
 
     socket.on('room-players', (data: { players: Player[] }) => {
-      setPlayers(data.players.filter((p) => p.id !== socket.id));
+      setPlayers(data.players || []);
     });
 
     socket.on('player-name-updated', (data: { playerId: string; oldName: string; newName: string; newPhoto?: string }) => {

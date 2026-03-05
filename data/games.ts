@@ -28,7 +28,13 @@ export const gamesList: Game[] = [
   {
     id: 'colorama',
     name: 'Colorama',
-    description: 'Jogo de cores e estratégia. Em desenvolvimento!',
+    description: 'Baseado em Hues and Cues: dê dicas de uma cor secreta no gradiente; os outros apostam. Pontos por proximidade!',
+    multiplayer: true,
+  },
+  {
+    id: 'segue-o-fluxo',
+    name: 'Segue o Fluxo',
+    description: 'Jogo de fluxo e ritmo. Em breve!',
     multiplayer: true,
   },
 ];

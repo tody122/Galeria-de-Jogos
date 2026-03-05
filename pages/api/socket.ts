@@ -186,14 +186,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           console.log(`✅ Este jogador é admin? ${isAdmin}`);
           console.log(`🔍 adminId final: ${finalAdminId} (tipo: ${typeof finalAdminId})`);
           
-          const players = updatedRoom ? Array.from(updatedRoom)
-            .map((id) => ({
-              id,
-              name: playerNames.get(id) || 'Jogador',
-              photo: playerPhotos.get(id) || '',
-              isAdmin: finalAdminId ? id === finalAdminId : false,
-            }))
-            .filter((p) => p.id !== socket.id) : [];
+          // Lista completa da sala (incluindo o jogador que acabou de entrar)
+          const players = updatedRoom ? Array.from(updatedRoom).map((id) => ({
+            id,
+            name: playerNames.get(id) || 'Jogador',
+            photo: playerPhotos.get(id) || '',
+            isAdmin: finalAdminId ? id === finalAdminId : false,
+          })) : [];
           
           console.log(`📤 Enviando ${players.length} jogadores + adminId: ${finalAdminId}`);
           console.log(`📋 Jogadores na lista:`, players.map(p => `${p.name} (${p.id}) - admin: ${p.isAdmin}`));
@@ -217,7 +216,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
           console.log(`✅ adminId incluído no payload: "${payload.adminId}" (tipo: ${typeof payload.adminId})`);
           console.log(`📦 Payload final:`, JSON.stringify(payload, null, 2));
           console.log(`🔍 Verificação final: roomAdmins.get(${roomId}) = ${roomAdmins.get(roomId)}`);
-          socket.emit('room-players', payload);
+          // Enviar lista atualizada para TODOS na sala (quem entrou e quem já estava)
+          io?.to(roomId).emit('room-players', payload);
         });
 
         // Sair de uma sala
@@ -270,6 +270,20 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
             from: socket.id,
             fromName: playerName,
           });
+        });
+
+        // Pedido da lista de jogadores (quando o jogo monta já dentro de uma sala)
+        socket.on('request-room-players', (roomId: string) => {
+          const room = io?.sockets.adapter.rooms.get(roomId);
+          if (!room || !room.has(socket.id)) return;
+          const finalAdminId = roomAdmins.get(roomId);
+          const players = Array.from(room).map((id) => ({
+            id,
+            name: playerNames.get(id) || 'Jogador',
+            photo: playerPhotos.get(id) || '',
+            isAdmin: finalAdminId ? id === finalAdminId : false,
+          }));
+          socket.emit('room-players', { players, adminId: finalAdminId || '' });
         });
 
         socket.on('disconnect', () => {
